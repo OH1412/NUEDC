@@ -35,6 +35,13 @@ class UdpVideoStreamTests(unittest.TestCase):
         self.assertIn("host=192.168.1.20", command)
         self.assertIn("port=5600", command)
 
+    def test_software_encoder_command(self) -> None:
+        config = StreamConfig(host="192.168.50.115")
+        command = gstreamer_command(config, "software")
+        self.assertIn("x264enc", command)
+        self.assertIn("speed-preset=ultrafast", command)
+        self.assertNotIn("nvv4l2h264enc", command)
+
     def test_invalid_host_is_rejected(self) -> None:
         with self.assertRaises(StreamError):
             validate_stream_config(StreamConfig(host="not an ip"))

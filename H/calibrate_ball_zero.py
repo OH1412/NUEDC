@@ -166,8 +166,8 @@ def main() -> int:
     try:
         if not args.no_prompt:
             input(
-                "请把钢珠贴近原零点端（球心物理刻度0.5 cm、"
-                "新坐标-12.0 cm），保持不动后按Enter开始采样："
+                "请把钢珠放在端点标定位置（端点坐标补偿0.16 cm、"
+                "新坐标-12.34 cm），保持不动后按Enter开始采样："
             )
         source.start()
         print(

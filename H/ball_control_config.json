@@ -1,13 +1,13 @@
 {
-  "_description": "H题钢珠位置控制配置。zero_point_base_m是球心贴近原零点端（物理0.5cm、新坐标-12.0cm）时的位置；equilibrium_angle_bias_deg只是当前目标未指定偏置时的初值，不代表所有位置共用同一保持角；单位均为SI或度。",
+  "_description": "H题钢珠位置控制配置。保留当前zero_point_base_m；端点坐标补偿为0.16cm，因此标定位置的新坐标为-12.34cm。zero_calibration_ball_radius_m是历史字段名，当前表示端点坐标补偿。",
   "zero_point_base_m": [
-    0.225076,
-    0.124873,
-    0.129672
+    0.227924,
+    0.123897,
+    0.129418
   ],
   "pipe_length_m": 0.25,
-  "target_coordinate_center_m": 0.12,
-  "zero_calibration_ball_radius_m": 0.005,
+  "target_coordinate_center_m": 0.1234,
+  "zero_calibration_ball_radius_m": 0.0016,
   "ball_mass_kg": 0.00409,
   "angle_min_deg": -21.8,
   "angle_max_deg": 21.8,
@@ -16,12 +16,11 @@
   "max_angle_step_deg": 0.25,
   "motor_displacement_scale": 1.0,
   "special_task": {
-    "first_point_cm": 1.35,
+    "first_point_cm": 2.1,
     "second_point_cm": -5.0,
     "first_angle_deg": -1.2,
     "positive_motor_scale": 1.0,
-    "negative_motor_scale": 1.0,
-    "smoothing_index_deg": 2.0
+    "negative_motor_scale": 1.0
   },
   "control_rate_hz": 25.0,
   "expected_vision_rate_hz": [

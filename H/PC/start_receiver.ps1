@@ -3,6 +3,7 @@ $Port = 5600
 $SubnetPrefix = "192.168.50."
 $FirewallRuleName = "NUEDC H Video UDP 5600"
 $SdpPath = Join-Path $PSScriptRoot "receiver.sdp"
+$RuntimeSdpPath = Join-Path $env:TEMP "nuedc_h_receiver_runtime.sdp"
 
 Write-Host "NUEDC H PC video receiver" -ForegroundColor Cyan
 
@@ -83,14 +84,22 @@ if (-not (Test-Path $SdpPath)) {
     exit 4
 }
 
+# 将SDP明确绑定到当前热点地址。部分VLC/Windows组合不会正确处理模板中的
+# 0.0.0.0，尤其是同时存在VPN或多个虚拟网卡时。
+$SdpText = Get-Content -Raw -Path $SdpPath
+$SdpText = $SdpText -replace '(?m)^o=.*$', "o=- 0 0 IN IP4 $PcAddress"
+$SdpText = $SdpText -replace '(?m)^c=IN IP4 .*$', "c=IN IP4 $PcAddress"
+Set-Content -Path $RuntimeSdpPath -Value $SdpText -Encoding Ascii
+Write-Host "接收配置已绑定：$PcAddress`:$Port"
+
 Write-Host ""
 Write-Host "正在启动VLC；请保持该窗口和VLC运行。" -ForegroundColor Cyan
-$QuotedSdpPath = '"' + $SdpPath + '"'
+$QuotedSdpPath = '"' + $RuntimeSdpPath + '"'
 Start-Process `
     -FilePath $VlcPath `
     -ArgumentList @(
-        "--network-caching=200",
-        "--live-caching=200",
+        "--network-caching=300",
+        "--live-caching=300",
         "--clock-jitter=0",
         "--clock-synchro=0",
         $QuotedSdpPath

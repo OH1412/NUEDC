@@ -31,6 +31,7 @@ def _curve_process_main(sample_queue: Any, control_mode: str) -> None:
     import tkinter as tk
     from tkinter import font as tkfont
     from tkinter import ttk
+    from ui_fonts import configure_tk_cjk_fonts
 
     root = tk.Tk()
     root.title("H题钢珠控制实时曲线")
@@ -38,9 +39,9 @@ def _curve_process_main(sample_queue: Any, control_mode: str) -> None:
     root.minsize(820, 520)
     root.configure(background="#eef2f6")
 
-    cjk_font = "Noto Sans CJK SC"
-    for font_name in ("TkDefaultFont", "TkTextFont", "TkMenuFont"):
-        tkfont.nametofont(font_name).configure(family=cjk_font, size=11)
+    cjk_font, _style = configure_tk_cjk_fonts(
+        root, tkfont, ttk, size=11
+    )
 
     header = tk.Frame(root, background="#174f7d", padx=16, pady=10)
     header.pack(fill="x")

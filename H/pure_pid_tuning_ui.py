@@ -61,6 +61,7 @@ def _ui_process_main(
         import tkinter as tk
         from tkinter import font as tkfont
         from tkinter import messagebox, simpledialog, ttk
+        from ui_fonts import configure_tk_cjk_fonts
 
         root = tk.Tk()
         root.title("H题纯串级PID实时调参")
@@ -68,17 +69,9 @@ def _ui_process_main(
         root.minsize(900, 620)
         root.configure(background="#eef2f6")
 
-        cjk_font = "Noto Sans CJK SC"
-        for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont"):
-            tkfont.nametofont(name).configure(family=cjk_font, size=12)
-        tkfont.nametofont("TkHeadingFont").configure(
-            family=cjk_font, size=13, weight="bold"
+        cjk_font, style = configure_tk_cjk_fonts(
+            root, tkfont, ttk, size=12
         )
-        style = ttk.Style(root)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
         style.configure("TFrame", background="#eef2f6")
         style.configure("Card.TFrame", background="#ffffff")
         style.configure("TLabel", background="#eef2f6", foreground="#17212b")

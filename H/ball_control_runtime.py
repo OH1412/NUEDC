@@ -26,12 +26,17 @@ from ball_control import (
     VelocityLowPassFilter,
     ball_position_from_zero,
 )
-from ball_tracker_source import BallTrackerSource, base_point_from_record
+from ball_tracker_source import (
+    BallTrackerSource,
+    FifoBallTrackerSource,
+    base_point_from_record,
+)
 from control_profiles import (
     DEFAULT_PROFILE_DIR,
     list_profiles,
     load_active_profile,
     load_profile,
+    normalize_profile_name,
     rename_profile,
     save_profile,
     set_active_profile,
@@ -47,6 +52,10 @@ from longitudinal_acceleration import (
     ManualAccelerationSource,
     ReservedAccelerationSource,
     acceleration_feedforward_angle_deg,
+)
+from mode5_equilibrium import (
+    DEFAULT_MODE5_EQUILIBRIUM_FILE,
+    save_mode5_equilibrium_point,
 )
 from tuning_diagnostics import (
     TuningDebugReporter,
@@ -85,6 +94,19 @@ def parse_args() -> argparse.Namespace:
         description="识别钢珠并输出目标管道倾角；默认只计算，不发送串口"
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument(
+        "--mode5-equilibrium-file",
+        type=Path,
+        default=DEFAULT_MODE5_EQUILIBRIUM_FILE,
+        help="UI协同保存目标位置和平衡基准角的专用JSON文件",
+    )
+    parser.add_argument(
+        "--control-profile",
+        help=(
+            "本次启动明确加载指定control_profiles参数方案；"
+            "不修改.active_profile默认指针"
+        ),
+    )
     parser.add_argument(
         "--target-cm",
         type=float,
@@ -135,6 +157,14 @@ def parse_args() -> argparse.Namespace:
         help=(
             "本次目标位置的非零平衡保持角初值；不同目标可给不同"
             "小角度，省略时读取配置默认值"
+        ),
+    )
+    parser.add_argument(
+        "--no-position-local-zero-prior",
+        action="store_true",
+        help=(
+            "本次启动不叠加配置中的目标位置局部零点先验；"
+            "用于让equilibrium-angle-bias-deg成为明确的初始平衡基准"
         ),
     )
     parser.add_argument(
@@ -215,6 +245,21 @@ def parse_args() -> argparse.Namespace:
         "--no-plot-ui",
         action="store_true",
         help="不打开独立的目标/实际位置与速度实时曲线窗口",
+    )
+    parser.add_argument(
+        "--shared-tracker-fifo",
+        help="从内核FIFO复用常驻比赛视觉，不启动YOLO或占用相机",
+    )
+    parser.add_argument(
+        "--auto-start-special-task",
+        action="store_true",
+        help="比赛服务已检查钢珠位置后，无UI自动启动特殊任务",
+    )
+    parser.add_argument(
+        "--auto-special-start-position-cm",
+        type=float,
+        default=0.0,
+        help="比赛服务已检查的特殊任务起始球心位置，用于确定第一段方向",
     )
     parser.add_argument(
         "tracker_args",
@@ -994,43 +1039,68 @@ def main() -> int:
     active_profile: Optional[str] = None
     try:
         config = load_config(config_path)
-        try:
-            active_profile, active_values = load_active_profile(
-                DEFAULT_PROFILE_DIR
-            )
-        except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
-            print(
-                "默认参数方案读取失败，改用基础配置：{}".format(error),
-                file=sys.stderr,
-            )
-            active_profile, active_values = None, None
+        if args.control_profile is not None:
+            active_profile = normalize_profile_name(args.control_profile)
+            active_values = load_profile(active_profile, DEFAULT_PROFILE_DIR)
+        else:
+            try:
+                active_profile, active_values = load_active_profile(
+                    DEFAULT_PROFILE_DIR
+                )
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+                print(
+                    "默认参数方案读取失败，改用基础配置：{}".format(error),
+                    file=sys.stderr,
+                )
+                active_profile, active_values = None, None
         if active_values is not None:
             overlay_control_parameters(config, active_values)
+        if args.no_position_local_zero_prior:
+            # 只修改本进程内存里的配置，不写回JSON。停滞后的实测局部
+            # 零点学习仍保留，可在固定平衡基准上修正管道的临时变化。
+            local_zero_prior = config.get("position_local_zero_prior")
+            if not isinstance(local_zero_prior, dict):
+                local_zero_prior = {}
+                config["position_local_zero_prior"] = local_zero_prior
+            local_zero_prior["enabled"] = False
         if args.special_task != SPECIAL_TASK_NONE:
             if args.control_mode != "position":
                 raise ValueError("特殊任务只支持position位置控制模式。")
             if args.controller != "cascade_pid":
                 raise ValueError("特殊任务当前只支持cascade_pid控制器。")
-            if args.no_control_ui:
+            if args.no_control_ui and not args.auto_start_special_task:
                 raise ValueError("特殊任务依赖UI启动，不能使用--no-control-ui。")
-            args.target_cm = 0.0
+            if args.auto_start_special_task and not args.no_control_ui:
+                raise ValueError("自动特殊任务必须配合--no-control-ui。")
             special_defaults = config["special_task"]
-            print(
-                "特殊任务已启用但尚未启动：UI底部五个任务参数来自配置文件；"
-                "默认第一点{:+.2f}cm、第二点{:+.2f}cm，第一段开环倾角"
-                "{:+.2f}°，任务正/负比例{:.2f}/{:.2f}。"
-                "到达第一点后直接使用{}.json闭环到第二点。"
-                "点击启动时钢珠必须位于中心±{:.1f}cm。".format(
-                    special_defaults["first_point_cm"],
-                    special_defaults["second_point_cm"],
-                    special_defaults["first_angle_deg"],
-                    special_defaults["positive_motor_scale"],
-                    special_defaults["negative_motor_scale"],
-                    SPECIAL_TASK_CONTROL_PROFILE,
-                    SPECIAL_TASK_INITIAL_LIMIT_CM,
-                ),
-                file=sys.stderr,
+            args.target_cm = (
+                special_defaults["first_point_cm"]
+                if args.auto_start_special_task
+                else 0.0
             )
+            if args.auto_start_special_task:
+                print(
+                    "特殊任务比赛无头模式：不启动UI，起点检查由常驻比赛"
+                    "服务完成。",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "特殊任务已启用但尚未启动：UI底部五个任务参数来自配置文件；"
+                    "默认第一点{:+.2f}cm、第二点{:+.2f}cm，第一段开环倾角"
+                    "{:+.2f}°，任务正/负比例{:.2f}/{:.2f}。"
+                    "到达第一点后直接使用{}.json闭环到第二点。"
+                    "点击启动时钢珠必须位于中心±{:.1f}cm。".format(
+                        special_defaults["first_point_cm"],
+                        special_defaults["second_point_cm"],
+                        special_defaults["first_angle_deg"],
+                        special_defaults["positive_motor_scale"],
+                        special_defaults["negative_motor_scale"],
+                        SPECIAL_TASK_CONTROL_PROFILE,
+                        SPECIAL_TASK_INITIAL_LIMIT_CM,
+                    ),
+                    file=sys.stderr,
+                )
         expected_vision = config.get("expected_vision_rate_hz")
         if (
             not isinstance(expected_vision, list)
@@ -1213,6 +1283,39 @@ def main() -> int:
             float(config["max_angle_step_deg"]),
             config["safety"],
         )
+    if args.auto_start_special_task:
+        task_profile_values = load_profile(
+            SPECIAL_TASK_CONTROL_PROFILE,
+            DEFAULT_PROFILE_DIR,
+        )
+        (
+            args.working_angle_limit_deg,
+            equilibrium_angle_bias_deg,
+            _unused_initial_angle,
+        ) = apply_control_parameters(
+            controller,
+            config,
+            task_profile_values,
+            0.0,
+        )
+        special_defaults = validate_special_task_settings(
+            config["special_task"],
+            centered_target_limits_cm(config),
+            args.working_angle_limit_deg,
+        )
+        args.target_cm = special_defaults["first_point_cm"]
+        target_m = control_target_from_centered(args.target_cm, config)
+        controller.reset(special_defaults["first_angle_deg"])
+        print(
+            "比赛服务自动特殊任务：先给{:+.2f}°到{:+.2f}cm，随后使用"
+            "{}.json闭环到{:+.2f}cm。".format(
+                special_defaults["first_angle_deg"],
+                special_defaults["first_point_cm"],
+                SPECIAL_TASK_CONTROL_PROFILE,
+                special_defaults["second_point_cm"],
+            ),
+            file=sys.stderr,
+        )
     if args.control_mode == "position":
         prior_angle_deg, prior_motor_mm = apply_position_local_zero_prior(
             controller, args.target_cm, target_m, config
@@ -1259,7 +1362,16 @@ def main() -> int:
         and "--stream-host" not in tracker_args
     ):
         tracker_args.extend(["--stream-host", args.stream_host])
-    source = BallTrackerSource(tracker_args)
+    source: Any
+    if args.shared_tracker_fifo:
+        source = FifoBallTrackerSource(args.shared_tracker_fifo)
+        print(
+            "视觉输入：复用本机常驻YOLO/RealSense，内存FIFO {}。"
+            .format(args.shared_tracker_fifo),
+            file=sys.stderr,
+        )
+    else:
+        source = BallTrackerSource(tracker_args)
     latest = LatestRecord()
     reader: Optional[threading.Thread] = None
     angle_deg = 0.0
@@ -1273,11 +1385,30 @@ def main() -> int:
     velocity_edge_hold = False
     velocity_edge_abs_cm = velocity_edge_trigger_cm(config)
     special_task_settings = dict(config["special_task"])
-    special_task_phase = "idle" if args.special_task != SPECIAL_TASK_NONE else "inactive"
+    special_task_phase = (
+        "to_first"
+        if args.auto_start_special_task
+        else ("idle" if args.special_task != SPECIAL_TASK_NONE else "inactive")
+    )
     special_manual_zero_hold = False
     special_first_direction = -1
-    active_positive_motor_scale = float(config["motor_displacement_scale"])
-    active_negative_motor_scale = float(config["motor_displacement_scale"])
+    active_positive_motor_scale = float(
+        special_task_settings["positive_motor_scale"]
+        if args.auto_start_special_task
+        else config["motor_displacement_scale"]
+    )
+    active_negative_motor_scale = float(
+        special_task_settings["negative_motor_scale"]
+        if args.auto_start_special_task
+        else config["motor_displacement_scale"]
+    )
+    if args.auto_start_special_task:
+        angle_deg = float(special_task_settings["first_angle_deg"])
+        special_first_direction = (
+            1
+            if args.target_cm >= float(args.auto_special_start_position_cm)
+            else -1
+        )
     try:
         if args.enable_serial:
             sender = PeriodicAngleSender.open(
@@ -1293,6 +1424,13 @@ def main() -> int:
                 ),
             )
             sender.start()
+            if args.auto_start_special_task:
+                sender.set_max_angle_command_step_deg(None)
+                sender.set_motor_displacement_scales(
+                    active_positive_motor_scale,
+                    active_negative_motor_scale,
+                )
+                sender.set_angle(angle_deg)
             print(
                 "真实串口已启用：{} @ {} baud，{:.1f} Hz".format(
                     args.port or config["serial_port"],
@@ -1668,6 +1806,104 @@ def main() -> int:
                                 "速度环已请求启动：旧视觉状态已清除，"
                                 "等待下一次有效钢珠检测。"
                             )
+                            control_ui.set_status(status_message)
+                            print(status_message, file=sys.stderr)
+                            continue
+                        if message_type in (
+                            "apply_target_bias_pair",
+                            "save_target_bias_pair",
+                        ):
+                            if args.control_mode != "position":
+                                raise ValueError(
+                                    "目标位置与基准角协同标定只用于位置模式。"
+                                )
+                            if args.special_task != SPECIAL_TASK_NONE:
+                                raise ValueError(
+                                    "特殊任务运行界面不能协同修改目标与基准角。"
+                                )
+                            new_target_cm = float(
+                                ui_message.get("target_cm")
+                            )
+                            new_bias_deg = float(
+                                ui_message.get("equilibrium_angle_bias_deg")
+                            )
+                            target_low_cm, target_high_cm = (
+                                centered_target_limits_cm(config)
+                            )
+                            if (
+                                not math.isfinite(new_target_cm)
+                                or not target_low_cm
+                                <= new_target_cm
+                                <= target_high_cm
+                            ):
+                                raise ValueError(
+                                    "协同标定目标必须在{:+.2f}到{:+.2f}cm内。"
+                                    .format(target_low_cm, target_high_cm)
+                                )
+                            if (
+                                not math.isfinite(new_bias_deg)
+                                or abs(new_bias_deg)
+                                > args.working_angle_limit_deg
+                            ):
+                                raise ValueError(
+                                    "协同标定基准角必须在当前工作限角±{:.2f}°内。"
+                                    .format(args.working_angle_limit_deg)
+                                )
+                            new_target_m = control_target_from_centered(
+                                new_target_cm, config
+                            )
+                            args.target_cm = new_target_cm
+                            target_m = new_target_m
+                            equilibrium_angle_bias_deg = new_bias_deg
+                            config["equilibrium_angle_bias_deg"] = new_bias_deg
+                            # 协同标定给出的就是完整固定基准，不再叠加旧的
+                            # 位置先验；停滞后的实测学习仍可继续微调。
+                            local_zero_prior = config.get(
+                                "position_local_zero_prior"
+                            )
+                            if not isinstance(local_zero_prior, dict):
+                                local_zero_prior = {}
+                                config["position_local_zero_prior"] = (
+                                    local_zero_prior
+                                )
+                            local_zero_prior["enabled"] = False
+                            controller.reset(angle_deg)
+                            if isinstance(controller, CascadePIDController):
+                                controller.local_zero_angle_deg = 0.0
+                                controller.local_zero_position_m = target_m
+                            target_monitor = create_target_monitor(
+                                target_m, config
+                            )
+                            target_status = None
+                            competition_failure_reported = False
+                            saved_text = ""
+                            if message_type == "save_target_bias_pair":
+                                (
+                                    saved_path,
+                                    replaced,
+                                    equivalent_height_mm,
+                                ) = save_mode5_equilibrium_point(
+                                    new_target_cm,
+                                    new_bias_deg,
+                                    args.mode5_equilibrium_file,
+                                )
+                                saved_text = (
+                                    "；已{}{}，等效高度{:+.3f}mm"
+                                    .format(
+                                        "覆盖" if replaced else "新增",
+                                        saved_path.name,
+                                        equivalent_height_mm,
+                                    )
+                                )
+                            status_message = (
+                                "已同步应用目标{:+.3f}cm与固定平衡基准"
+                                "{:+.4f}°{}。"
+                            ).format(
+                                new_target_cm,
+                                new_bias_deg,
+                                saved_text,
+                            )
+                            control_ui.set_target(new_target_cm)
                             control_ui.set_status(status_message)
                             print(status_message, file=sys.stderr)
                             continue

@@ -1,0 +1,250 @@
+{
+  "_description": "Mode 5按记录球位就近选择固定平衡基准角。position_cm单位cm；equilibrium_angle_bias_deg单位deg；equivalent_height_mm按250*tan(theta)生成，仅用于核对。",
+  "points": [
+    {
+      "position_cm": 12.0,
+      "equilibrium_angle_bias_deg": -1.85,
+      "equivalent_height_mm": -8.074954
+    },
+    {
+      "position_cm": 11.5,
+      "equilibrium_angle_bias_deg": -1.7813,
+      "equivalent_height_mm": -7.774893
+    },
+    {
+      "position_cm": 11.0,
+      "equilibrium_angle_bias_deg": -1.5697,
+      "equivalent_height_mm": -6.850822
+    },
+    {
+      "position_cm": 10.5,
+      "equilibrium_angle_bias_deg": -1.6402,
+      "equivalent_height_mm": -7.158678
+    },
+    {
+      "position_cm": 10.0,
+      "equilibrium_angle_bias_deg": -1.6049,
+      "equivalent_height_mm": -7.004529
+    },
+    {
+      "position_cm": 9.5,
+      "equilibrium_angle_bias_deg": -1.6755,
+      "equivalent_height_mm": -7.312833
+    },
+    {
+      "position_cm": 9.0,
+      "equilibrium_angle_bias_deg": -1.6049,
+      "equivalent_height_mm": -7.004529
+    },
+    {
+      "position_cm": 8.5,
+      "equilibrium_angle_bias_deg": -1.4638,
+      "equivalent_height_mm": -6.388422
+    },
+    {
+      "position_cm": 8.0,
+      "equilibrium_angle_bias_deg": -1.358,
+      "equivalent_height_mm": -5.926503
+    },
+    {
+      "position_cm": 7.5,
+      "equilibrium_angle_bias_deg": -1.2169,
+      "equivalent_height_mm": -5.310526
+    },
+    {
+      "position_cm": 7.0,
+      "equilibrium_angle_bias_deg": -1.0406,
+      "equivalent_height_mm": -4.540973
+    },
+    {
+      "position_cm": 6.5,
+      "equilibrium_angle_bias_deg": -1.0053,
+      "equivalent_height_mm": -4.386899
+    },
+    {
+      "position_cm": 6.0,
+      "equilibrium_angle_bias_deg": -0.97,
+      "equivalent_height_mm": -4.232828
+    },
+    {
+      "position_cm": 5.5,
+      "equilibrium_angle_bias_deg": -0.6878,
+      "equivalent_height_mm": -3.001238
+    },
+    {
+      "position_cm": 5.0,
+      "equilibrium_angle_bias_deg": -0.3351,
+      "equivalent_height_mm": -1.462166
+    },
+    {
+      "position_cm": 4.5,
+      "equilibrium_angle_bias_deg": -0.2,
+      "equivalent_height_mm": -0.872668
+    },
+    {
+      "position_cm": 4.0,
+      "equilibrium_angle_bias_deg": -0.12,
+      "equivalent_height_mm": -0.5236
+    },
+    {
+      "position_cm": 3.5,
+      "equilibrium_angle_bias_deg": -0.1,
+      "equivalent_height_mm": -0.436333
+    },
+    {
+      "position_cm": 3.0,
+      "equilibrium_angle_bias_deg": -0.09,
+      "equivalent_height_mm": -0.392699
+    },
+    {
+      "position_cm": 2.5,
+      "equilibrium_angle_bias_deg": -0.095,
+      "equivalent_height_mm": -0.414516
+    },
+    {
+      "position_cm": 2.0,
+      "equilibrium_angle_bias_deg": -0.085,
+      "equivalent_height_mm": -0.370883
+    },
+    {
+      "position_cm": 1.5,
+      "equilibrium_angle_bias_deg": -0.0,
+      "equivalent_height_mm": -0.0
+    },
+    {
+      "position_cm": 1.0,
+      "equilibrium_angle_bias_deg": -0.0,
+      "equivalent_height_mm": -0.0
+    },
+    {
+      "position_cm": 0.5,
+      "equilibrium_angle_bias_deg": 0.1235,
+      "equivalent_height_mm": 0.538871
+    },
+    {
+      "position_cm": 0.0,
+      "equilibrium_angle_bias_deg": 0.3704,
+      "equivalent_height_mm": 1.616197
+    },
+    {
+      "position_cm": -0.5,
+      "equilibrium_angle_bias_deg": 0.4115,
+      "equivalent_height_mm": 1.795538
+    },
+    {
+      "position_cm": -1.0,
+      "equilibrium_angle_bias_deg": 0.3351,
+      "equivalent_height_mm": 1.462166
+    },
+    {
+      "position_cm": -1.5,
+      "equilibrium_angle_bias_deg": 0.3851,
+      "equivalent_height_mm": 1.680341
+    },
+    {
+      "position_cm": -2.0,
+      "equilibrium_angle_bias_deg": 0.4851,
+      "equivalent_height_mm": 2.116699
+    },
+    {
+      "position_cm": -2.5,
+      "equilibrium_angle_bias_deg": 0.582,
+      "equivalent_height_mm": 2.539541
+    },
+    {
+      "position_cm": -3.0,
+      "equilibrium_angle_bias_deg": 0.6173,
+      "equivalent_height_mm": 2.693584
+    },
+    {
+      "position_cm": -3.5,
+      "equilibrium_angle_bias_deg": 0.8173,
+      "equivalent_height_mm": 3.566386
+    },
+    {
+      "position_cm": -4.0,
+      "equilibrium_angle_bias_deg": 0.9173,
+      "equivalent_height_mm": 4.002818
+    },
+    {
+      "position_cm": -4.5,
+      "equilibrium_angle_bias_deg": 0.9173,
+      "equivalent_height_mm": 4.002818
+    },
+    {
+      "position_cm": -5.0,
+      "equilibrium_angle_bias_deg": 0.9673,
+      "equivalent_height_mm": 4.221044
+    },
+    {
+      "position_cm": -5.5,
+      "equilibrium_angle_bias_deg": 0.8,
+      "equivalent_height_mm": 3.490885
+    },
+    {
+      "position_cm": -6.0,
+      "equilibrium_angle_bias_deg": 0.85,
+      "equivalent_height_mm": 3.709097
+    },
+    {
+      "position_cm": -6.5,
+      "equilibrium_angle_bias_deg": 0.85,
+      "equivalent_height_mm": 3.709097
+    },
+    {
+      "position_cm": -7.0,
+      "equilibrium_angle_bias_deg": 0.89,
+      "equivalent_height_mm": 3.88367
+    },
+    {
+      "position_cm": -7.5,
+      "equilibrium_angle_bias_deg": 0.89,
+      "equivalent_height_mm": 3.88367
+    },
+    {
+      "position_cm": -8.0,
+      "equilibrium_angle_bias_deg": 0.91,
+      "equivalent_height_mm": 3.970958
+    },
+    {
+      "position_cm": -8.5,
+      "equilibrium_angle_bias_deg": 0.93,
+      "equivalent_height_mm": 4.058247
+    },
+    {
+      "position_cm": -9.0,
+      "equilibrium_angle_bias_deg": 0.9,
+      "equivalent_height_mm": 3.927314
+    },
+    {
+      "position_cm": -9.5,
+      "equilibrium_angle_bias_deg": 0.9,
+      "equivalent_height_mm": 3.927314
+    },
+    {
+      "position_cm": -10.0,
+      "equilibrium_angle_bias_deg": 1.1,
+      "equivalent_height_mm": 4.800245
+    },
+    {
+      "position_cm": -10.5,
+      "equilibrium_angle_bias_deg": 1.1,
+      "equivalent_height_mm": 4.800245
+    },
+    {
+      "position_cm": -11.0,
+      "equilibrium_angle_bias_deg": 1.1,
+      "equivalent_height_mm": 4.800245
+    },
+    {
+      "position_cm": -11.5,
+      "equilibrium_angle_bias_deg": 1.2,
+      "equivalent_height_mm": 5.236753
+    },
+    {
+      "position_cm": -12.0,
+      "equilibrium_angle_bias_deg": 1.2,
+      "equivalent_height_mm": 5.236753
+    }
+  ]
+}

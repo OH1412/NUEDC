@@ -23,7 +23,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_TRANSFORM = SCRIPT_DIR / "camera_to_base.json"
 DEFAULT_ENGINE = SCRIPT_DIR / "weights" / "steel_ball_best_legacy.engine"
 DEFAULT_PT = SCRIPT_DIR / "weights" / "steel_ball_v6_server_real_env.pt"
-DEFAULT_BALL_RADIUS_M = 0.005
+DEFAULT_BALL_RADIUS_M = 0.0084
 
 
 def default_weights() -> Path:
@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
         "--ball-radius-m",
         type=float,
         default=DEFAULT_BALL_RADIUS_M,
-        help="钢珠半径，RealSense球面深度加此值后作为球心深度，默认0.005m",
+        help="钢珠半径，RealSense球面深度加此值后作为球心深度，默认0.0084m",
     )
     parser.add_argument(
         "--warmup-frames",
@@ -580,6 +580,12 @@ def main() -> int:
             )
             record["processing_latency_ms"] = round(
                 time.perf_counter() * 1000.0 - capture_monotonic_ms, 3
+            )
+            # 常驻比赛服务用此字段区分“视觉推理正常”和“视频编码仍在线”。
+            # 推流异常会在本帧发送后被关闭，下一帧即可报告false。
+            record["video_stream_active"] = streamer is not None
+            record["video_stream_encoder"] = (
+                None if streamer is None else streamer.active_encoder
             )
 
             if args.print_every > 0 and frame_index % args.print_every == 0:

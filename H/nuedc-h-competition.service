@@ -1,0 +1,25 @@
+[Unit]
+Description=NUEDC H Ball Control Competition Service
+Requires=nuedc-h-hotspot.service
+After=nuedc-h-hotspot.service systemd-udev-settle.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pangolin
+Group=pangolin
+SupplementaryGroups=dialout video render plugdev
+WorkingDirectory=/home/pangolin/NUEDC
+Environment=PYTHONNOUSERSITE=1
+ExecStart=/home/pangolin/NUEDC/H/run_competition_core.sh
+StandardOutput=null
+StandardError=null
+KillSignal=SIGTERM
+KillMode=control-group
+TimeoutStartSec=90
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -249,6 +249,20 @@ class RuntimeTimestampTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     control_target_from_centered(invalid, config)
 
+    def test_current_geometry_uses_016cm_endpoint_offset(self) -> None:
+        config = json.loads(
+            (H_DIR / "ball_control_config.json").read_text(encoding="utf-8")
+        )
+        self.assertAlmostEqual(config["zero_calibration_ball_radius_m"], 0.0016)
+        self.assertAlmostEqual(config["target_coordinate_center_m"], 0.1234)
+        self.assertEqual(centered_target_limits_cm(config), (-12.34, 12.34))
+        self.assertAlmostEqual(
+            control_target_from_centered(-12.34, config), 0.0
+        )
+        self.assertAlmostEqual(
+            control_target_from_centered(12.34, config), 0.2468
+        )
+
     def test_ui_target_limits_and_new_monitor_follow_selected_target(self) -> None:
         config = {
             "pipe_length_m": 0.25,

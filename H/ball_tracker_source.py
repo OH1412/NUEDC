@@ -2,9 +2,12 @@
 """以子进程复用现有钢珠识别器，并逐行读取结构化结果。"""
 
 import json
+import os
 from pathlib import Path
+import select
 import subprocess
 import sys
+import time
 from typing import Any, Dict, Iterator, Optional, Sequence
 
 
@@ -98,6 +101,67 @@ class BallTrackerSource:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+
+class FifoBallTrackerSource:
+    """从内核FIFO接收常驻视觉结果，不写磁盘也不占用网卡。"""
+
+    def __init__(self, path: str) -> None:
+        self.path = Path(path)
+        self.closed = False
+        self.started = False
+        self.fd: Optional[int] = None
+
+    def start(self) -> None:
+        if self.started:
+            raise RuntimeError("共享视觉FIFO接收器已经启动。")
+        if not self.path.exists():
+            os.mkfifo(str(self.path), 0o600)
+        self.fd = os.open(str(self.path), os.O_RDONLY | os.O_NONBLOCK)
+        self.started = True
+        self.closed = False
+
+    def records(self) -> Iterator[Dict[str, Any]]:
+        if not self.started or self.fd is None:
+            raise RuntimeError("共享视觉FIFO接收器尚未启动。")
+        buffer = bytearray()
+        while not self.closed:
+            try:
+                readable, _, _ = select.select([self.fd], [], [], 0.5)
+                if not readable:
+                    continue
+                chunk = os.read(self.fd, 65536)
+            except (OSError, ValueError):
+                if self.closed:
+                    break
+                raise
+            if not chunk:
+                time.sleep(0.005)
+                continue
+            buffer.extend(chunk)
+            while b"\n" in buffer:
+                line, _, remainder = buffer.partition(b"\n")
+                buffer = bytearray(remainder)
+                try:
+                    record = json.loads(line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if isinstance(record, dict):
+                    yield record
+
+    def wait(self, timeout: float = 1.0) -> int:
+        del timeout
+        return 0
+
+    def poll(self) -> Optional[int]:
+        return 0 if self.closed else None
+
+    def close(self) -> None:
+        self.closed = True
+        fd = self.fd
+        self.fd = None
+        if fd is not None:
+            os.close(fd)
 
 
 def base_point_from_record(record: Dict[str, Any]) -> Optional[list]:

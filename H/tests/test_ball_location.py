@@ -89,14 +89,14 @@ class BallLocationTests(unittest.TestCase):
         self.assertTrue(record["valid"])
         self.assertEqual(record["pixel"], {"u": 320.0, "v": 240.0})
         self.assertAlmostEqual(record["surface_depth_m"], 1.0)
-        self.assertAlmostEqual(record["ball_radius_m"], 0.005)
-        self.assertAlmostEqual(record["depth_m"], 1.005)
+        self.assertAlmostEqual(record["ball_radius_m"], 0.0084)
+        self.assertAlmostEqual(record["depth_m"], 1.0084)
         self.assertEqual(
-            record["camera_point_m"], {"x": 0.0, "y": 0.0, "z": 1.005}
+            record["camera_point_m"], {"x": 0.0, "y": 0.0, "z": 1.0084}
         )
         self.assertEqual(
             record["camera_base_point_m"],
-            {"x": 0.792204, "y": 0.0, "z": -0.356167},
+            {"x": 0.794884, "y": 0.0, "z": -0.358259},
         )
 
     def test_huge_box_is_filtered_and_not_returned_for_drawing(self) -> None:

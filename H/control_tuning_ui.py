@@ -37,7 +37,7 @@ PARAMETER_SPECS: Tuple[ParameterSpec, ...] = (
         "s",
     ),
     ParameterSpec(
-        "equilibrium_angle_bias_deg", "当前位置平衡角初值", -10.0, 10.0, 0.05, "deg"
+        "equilibrium_angle_bias_deg", "当前位置平衡角初值", -10.0, 10.0, 0.0001, "deg"
     ),
     ParameterSpec("position_kp_s_inv", "位置环 Kp", 0.0, 5.0, 0.05, "1/s"),
     ParameterSpec("position_ki_s2_inv", "位置环 Ki", 0.0, 5.0, 0.05, "1/s^2"),
@@ -142,6 +142,7 @@ def _ui_process_main(
         import tkinter as tk
         from tkinter import font as tkfont
         from tkinter import messagebox, simpledialog, ttk
+        from ui_fonts import configure_tk_cjk_fonts
 
         root = tk.Tk()
         root.title("H题钢珠串级PID实时调参")
@@ -149,19 +150,9 @@ def _ui_process_main(
         root.minsize(980, 650)
         root.configure(background="#eef2f6")
 
-        cjk_font = "Noto Sans CJK SC"
-        for font_name in ("TkDefaultFont", "TkTextFont", "TkMenuFont"):
-            tkfont.nametofont(font_name).configure(
-                family=cjk_font, size=12
-            )
-        tkfont.nametofont("TkHeadingFont").configure(
-            family=cjk_font, size=13, weight="bold"
+        cjk_font, style = configure_tk_cjk_fonts(
+            root, tkfont, ttk, size=12
         )
-        style = ttk.Style(root)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
         style.configure("TFrame", background="#eef2f6")
         style.configure("Card.TFrame", background="#ffffff")
         style.configure("TLabel", background="#eef2f6", foreground="#17212b")
@@ -239,6 +230,18 @@ def _ui_process_main(
         target_bar.pack(fill="x", padx=16, pady=(0, 8))
         target_variable = tk.StringVar(value="{:.2f}".format(initial_target_cm))
         target_slider_variable = tk.DoubleVar(value=float(initial_target_cm))
+        variables: Dict[str, tk.StringVar] = {
+            "equilibrium_angle_bias_deg": tk.StringVar(
+                value="{:.4f}".format(
+                    initial["equilibrium_angle_bias_deg"]
+                )
+            )
+        }
+        slider_variables: Dict[str, tk.DoubleVar] = {
+            "equilibrium_angle_bias_deg": tk.DoubleVar(
+                value=float(initial["equilibrium_angle_bias_deg"])
+            )
+        }
 
         def target_scale_changed(raw_value: str) -> None:
             numeric = round(float(raw_value) * 10.0) / 10.0
@@ -381,8 +384,6 @@ def _ui_process_main(
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        variables: Dict[str, tk.StringVar] = {}
-        slider_variables: Dict[str, tk.DoubleVar] = {}
         spec_by_key = {spec.key: spec for spec in PARAMETER_SPECS}
 
         def decimal_places(increment: float) -> int:
@@ -445,12 +446,16 @@ def _ui_process_main(
             ).grid(
                 row=row, column=0, sticky="w", padx=(16, 8), pady=7
             )
-            variable = tk.StringVar(
-                value=format_for_spec(spec, initial[spec.key])
-            )
-            variables[spec.key] = variable
-            slider_variable = tk.DoubleVar(value=float(initial[spec.key]))
-            slider_variables[spec.key] = slider_variable
+            if spec.key in variables:
+                variable = variables[spec.key]
+                slider_variable = slider_variables[spec.key]
+            else:
+                variable = tk.StringVar(
+                    value=format_for_spec(spec, initial[spec.key])
+                )
+                variables[spec.key] = variable
+                slider_variable = tk.DoubleVar(value=float(initial[spec.key]))
+                slider_variables[spec.key] = slider_variable
             scale = ttk.Scale(
                 form,
                 from_=spec.minimum,
@@ -486,6 +491,98 @@ def _ui_process_main(
             ).grid(row=row, column=3, sticky="w", padx=(6, 16), pady=7)
             row += 1
         form.columnconfigure(1, weight=1)
+
+        if not velocity_mode:
+            pair_frame = ttk.LabelFrame(
+                root,
+                text="Mode 5 目标位置与固定平衡基准角协同标定",
+            )
+            pair_frame.pack(fill="x", padx=16, pady=(0, 8))
+
+            def submit_target_bias_pair(save: bool) -> None:
+                numeric_target = normalize_target_entry()
+                if numeric_target is None:
+                    return
+                entry_changed("equilibrium_angle_bias_deg")
+                try:
+                    numeric_bias = float(
+                        variables["equilibrium_angle_bias_deg"].get()
+                    )
+                    working_limit = float(
+                        variables["working_angle_limit_deg"].get()
+                    )
+                except ValueError:
+                    status.set("目标位置或平衡基准角不是有效数字。")
+                    return
+                if not math.isfinite(numeric_bias):
+                    status.set("平衡基准角必须是有限数。")
+                    return
+                if abs(numeric_bias) > working_limit:
+                    status.set(
+                        "平衡基准角{:+.4f}°超过当前工作限角±{:.2f}°。"
+                        .format(numeric_bias, working_limit)
+                    )
+                    return
+                try:
+                    connection.send(
+                        {
+                            "type": (
+                                "save_target_bias_pair"
+                                if save
+                                else "apply_target_bias_pair"
+                            ),
+                            "target_cm": numeric_target,
+                            "equilibrium_angle_bias_deg": numeric_bias,
+                        }
+                    )
+                except (BrokenPipeError, EOFError, OSError):
+                    status.set("控制进程已经结束，协同标定不能执行。")
+                    return
+                status.set(
+                    "正在协同保存并应用……"
+                    if save
+                    else "正在同步应用目标位置和基准角……"
+                )
+
+            ttk.Label(pair_frame, text="平衡基准角").pack(
+                side="left", padx=(8, 4), pady=8
+            )
+            ttk.Scale(
+                pair_frame,
+                from_=spec_by_key["equilibrium_angle_bias_deg"].minimum,
+                to=spec_by_key["equilibrium_angle_bias_deg"].maximum,
+                variable=slider_variables["equilibrium_angle_bias_deg"],
+                orient="horizontal",
+                command=lambda raw: scale_changed(
+                    "equilibrium_angle_bias_deg", raw
+                ),
+            ).pack(side="left", fill="x", expand=True, padx=8, pady=8)
+            pair_bias_spinbox = ttk.Spinbox(
+                pair_frame,
+                from_=spec_by_key["equilibrium_angle_bias_deg"].minimum,
+                to=spec_by_key["equilibrium_angle_bias_deg"].maximum,
+                increment=spec_by_key["equilibrium_angle_bias_deg"].increment,
+                textvariable=variables["equilibrium_angle_bias_deg"],
+                width=11,
+                command=lambda: entry_changed("equilibrium_angle_bias_deg"),
+            )
+            pair_bias_spinbox.pack(side="left", padx=6, pady=8)
+            pair_bias_spinbox.bind(
+                "<Return>",
+                lambda _event: entry_changed("equilibrium_angle_bias_deg"),
+            )
+            ttk.Label(pair_frame, text="deg").pack(side="left", padx=(0, 8))
+            ttk.Button(
+                pair_frame,
+                text="同步应用",
+                command=lambda: submit_target_bias_pair(False),
+            ).pack(side="left", padx=6, pady=6)
+            ttk.Button(
+                pair_frame,
+                text="协同保存并应用",
+                command=lambda: submit_target_bias_pair(True),
+                style="Primary.TButton",
+            ).pack(side="left", padx=(6, 12), pady=6)
 
         def mouse_wheel(event: Any) -> None:
             if getattr(event, "num", None) == 4:
@@ -780,8 +877,8 @@ class ControlTuningUI:
         profile_names: Optional[List[str]] = None,
         active_profile: Optional[str] = None,
         initial_target_cm: float = 0.0,
-        target_min_cm: float = -12.0,
-        target_max_cm: float = 12.0,
+        target_min_cm: float = -12.34,
+        target_max_cm: float = 12.34,
         setpoint_mode: str = "position",
         special_task_enabled: bool = False,
         special_task_initial: Optional[Mapping[str, Any]] = None,
