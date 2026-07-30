@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root main_tree_to_execute="DemoTree">
+  <BehaviorTree ID="DemoTree">
+    <Sequence name="PluginDemo">
+      <SetBlackboard key="mode" value="competition"/>
+      <BlackboardEquals
+          name="CheckCompetitionMode"
+          key="mode"
+          value="competition"/>
+      <Log message="外部插件验证成功"/>
+    </Sequence>
+  </BehaviorTree>
+</root>

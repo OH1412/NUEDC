@@ -1,0 +1,80 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------- Local environments and caches ----------
+.conda/
+.venv/
+venv/
+env/
+.cache/
+.config/
+.downloads/
+.realsense/
+.claude/
+
+# ---------- Editors and operating systems ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---------- Local secrets ----------
+.env
+.env.*
+!.env.example
+
+# ---------- Build products ----------
+.build/
+build/
+build-*/
+dist/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.o
+*.so
+*.a
+
+# ROS 2工作区只保留src源码。
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# 子项目生成目录。
+bluetooth_uart/build/
+
+# ---------- Models and converted inference engines ----------
+# 模型文件体积较大，H/weights/README.md仍会被保留。
+*.pt
+*.pth
+*.engine
+*.onnx
+*.plan
+
+# ---------- Runtime output ----------
+runs/
+yolo-steel-ball-runs/
+yolo_camera_captures/
+E/output/
+H/output/
+H/captured_photos/
+
+*.jsonl
+*.log
+core
+core.*
+
+# ---------- Generated archives ----------
+H/captured_photos.zip
+H/NUEDC_H_PC_receiver.zip

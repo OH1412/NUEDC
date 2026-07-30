@@ -1,0 +1,12 @@
+{
+  "_description": "RealSense光学坐标系到底座坐标系的实测外参。地面标定得到相机高度0.262249m、下俯37.98度、横滚-9.46度，镜头偏航固定朝底座正X。",
+  "source_frame": "camera_optical",
+  "target_frame": "camera_base",
+  "convention": "p_camera_base = R_camera_base_from_camera * p_camera + t_camera_base_from_camera",
+  "rotation_matrix": [
+    [-0.101179197, -0.606963894, 0.788262394],
+    [-0.986389035, 0.164428316, 0.0],
+    [-0.129612658, -0.777533382, -0.615339255]
+  ],
+  "translation_m": [0.0, 0.0, 0.262249]
+}

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <!--
+    小电脑端行为树。相同的 0x76 完成帧由当前树状态区分：
+    第一次表示前进 1 m 完成，第二次表示左转 90° 完成。
+  -->
+  <BehaviorTree ID="MainTree">
+    <Sequence name="SimpleAckMission">
+      <Log message="等待 MCU 完成前进 1.0 m"/>
+      <WaitSerialFrame
+          name="WaitForward1mDone"
+          frame="76 01 00 00 00 00 00 67"
+          timeout_s="30"/>
+      <SendSerialFrame
+          name="AckForward1m"
+          frame="92 10 00 00 00 00 00 29"/>
+
+      <Log message="已回复 0x10，等待 MCU 完成左转 90 度"/>
+      <WaitSerialFrame
+          name="WaitTurn90Done"
+          frame="76 01 00 00 00 00 00 67"
+          timeout_s="30"/>
+      <SendSerialFrame
+          name="AckTurn90"
+          frame="92 11 00 00 00 00 00 29"/>
+
+      <SetBlackboard key="mission_result" value="success"/>
+      <Log message="协议完成：{mission_result}；MCU 应开始前进 0.5 m"/>
+    </Sequence>
+  </BehaviorTree>
+</root>
