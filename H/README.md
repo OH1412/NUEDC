@@ -290,6 +290,70 @@ t_base_from_camera = [0, 0, 0.262249] m
 该矩阵正交且行列式约为1，是右手旋转矩阵。这里按安装约束假设相机相对
 底座没有前后和左右偏移。
 
+## 钢珠位置闭环控制
+
+新增从球心三维定位到管道目标倾角的完整闭环，包括零点标定、常加速度
+Kalman状态估计、串级PID、约束MPC、固定50 Hz八字节串口发送及10°自由滚落
+参数辨识。完整符号定义、操作命令、参数含义、必测物理性质和安全调试步骤见
+[`H/BALL_CONTROL.md`](BALL_CONTROL.md)。
+
+首次使用必须依次完成：
+
+```bash
+# 1. 把球固定在0 cm位置并标定球心零点
+./H/start_ball_zero_calibration.sh -- --no-display --no-cpu-fallback
+
+# 2. 先只计算控制角，不连接电机动作
+./H/start_ball_controller.sh --target-cm 10
+
+# 3. 确认正角使位置下降后才启用串口
+./H/start_ball_controller.sh \
+  --target-cm 10 \
+  --enable-serial
+
+# 4. 实机调参时打开只读诊断（参数必须写在分隔符 -- 前）
+./H/start_ball_controller.sh \
+  --target-cm 10 \
+  --enable-serial \
+  --tuning-debug \
+  -- \
+  --no-display
+```
+
+控制器默认串级PID、工作限角 `±10°`，物理硬限位 `±30°`。目标位置参数范围
+为 `0～25 cm`。实测视觉约15～20 FPS，因此只在每个新视觉测量到达时更新
+倾角，25 Hz循环负责超时监督，串口独立以50 Hz重发最新指令；超过0.25 s
+没有新鲜测量会发送0°。控制器先在目标来向侧0.6 cm安全预停，连续低速后
+再缓慢推进到内部±0.3 cm目标带。随机仿真和联合边界压力测试的命令、结果及
+尚不能保证的极端工况见 [`H/BALL_CONTROL.md`](BALL_CONTROL.md)。
+越过目标另一侧1 cm仍会锁存比赛失败记录，但默认不中断，而是继续控制钢珠
+返回目标；仅显式加入 `--stop-on-competition-failure` 时才归零退出。
+控制器默认约每秒输出1行精简状态；`--print-every 0` 可完全关闭，
+`--telemetry full --print-every 5` 可恢复原完整调试JSON。
+
+无需相机、直接交互测试电机倾角：
+
+```bash
+./H/start_motor_angle_test.sh
+```
+
+默认测试限角为±10°，退出时停止周期发送后同步发送最终0°。具体命令和
+`serial/send.py` 的适用区别见 [`H/BALL_CONTROL.md`](BALL_CONTROL.md)。
+所有电机发送入口在每次打开串口后的第一帧角度命令前，都会先发送一次
+`92 4F 4B 00 00 00 00 29` 电机使能帧，紧接着发送一次
+`92 00 00 00 00 00 00 29` 0°初始化帧，再开始原目标角度发送。
+
+直接持续发送单一电机角度也可使用统一环境入口：
+
+```bash
+./serial/start_send.sh 2.00
+```
+
+`--tuning-debug` 默认关闭；打开后每2秒在后台输出实际处理/有效视觉FPS、
+延迟、位置误差、速度、参考速度和倾角，并根据不起滚、接近过快、振荡、
+响应慢或方向异常给出下一次试验应修改的单个参数。它只给建议，不自动修改
+配置或控制量；后台只保留最新诊断快照，不会因终端刷屏反压控制循环。
+
 ### 用地面反推高度、俯仰角和横滚角
 
 让RealSense画面只包含水平地面，然后运行：
@@ -347,18 +411,18 @@ color_frame.profile.as_video_stream_profile().get_intrinsics()
 
 按 `q` 或 `Esc` 退出。默认使用：
 
-- `H/weights/steel_ball_best_2.pt`
+- `H/weights/steel_ball_v5.pt`
 - 640×480、60 fps RGB 与深度流
 - YOLO输入尺寸320、CUDA设备0
 - `H/camera_to_base.json`
 
 默认直接加载项目内的钢珠权重
-`H/weights/steel_ball_best_2.pt`。它复制自 `best(2).pt`，源文件保持
+`H/weights/steel_ball_v5.pt`。它复制自 `v5.pt`，源文件保持
 不变。原有
 `/home/pangolin/Downloads/best.engine` 和
 `/home/pangolin/Downloads/best.pt` 均保留，可通过 `--weights` 显式切换，
 没有删除或覆盖。显式使用 `.engine` 时若加载失败，仍可回退到默认
-`steel_ball_best_2.pt` CPU推理；添加
+`steel_ball_v5.pt` CPU推理；添加
 `--no-cpu-fallback` 可禁止回退。
 默认CUDA设备0若因统一内存不足无法启动项目PT权重，同样会自动切换到CPU，
 不会直接退出；CPU帧率会明显低于CUDA。

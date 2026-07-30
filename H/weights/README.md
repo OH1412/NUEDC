@@ -5,7 +5,8 @@
 
 | 项目文件 | 状态 | 原始文件 | SHA-256 |
 |---|---|---|---|
-| `steel_ball_best_2.pt` | 当前默认 | 微信 `best(2).pt` | `bad647dfbaaa381234e55ee8a47b48c8cc2b74a5f94771b4e69a007f99fb0697` |
+| `steel_ball_v5.pt` | 当前默认 | 微信 `v5.pt` | `4498de7d983f0a4a96bdcdf15151e2be188888ef2d22f3b6b4e6bbd02a1b9486` |
+| `steel_ball_best_2.pt` | 历史PT | 微信 `best(2).pt` | `bad647dfbaaa381234e55ee8a47b48c8cc2b74a5f94771b4e69a007f99fb0697` |
 | `steel_ball_v4_interrupted_best.pt` | 历史PT | 微信 `v4_interrupted_best.pt` | `43d0e30b356999b3a0301144ddf19310da297afe66d0d4590e60e7ff41b375e2` |
 | `steel_ball_best.pt` | 历史PT | 微信 `best(1).pt` | `e44621f19377cab0d6ec59c048ff5b0ca8a84b8f99ebbc127e21f95b5c74c7a7` |
 | `steel_ball_v3.pt` | 历史PT | 微信 `v3.pt` | `a8ace794752e7f4f85079e56497c08c9554bee078b65b52ade0e2350181a1eaf` |
@@ -21,6 +22,9 @@
 临时切换旧权重：
 
 ```bash
+./H/start_ball_depth_tracker.sh \
+  --weights H/weights/steel_ball_best_2.pt
+
 ./H/start_ball_depth_tracker.sh \
   --weights H/weights/steel_ball_v4_interrupted_best.pt
 

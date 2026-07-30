@@ -12,11 +12,20 @@
     python3 receive.py --timeout 10        # 10秒无数据后自动退出
 """
 
-import serial
 import argparse
 import sys
 import time
 from datetime import datetime
+
+try:
+    import serial
+except ImportError:
+    print(
+        "缺少pyserial。请从项目根目录运行："
+        "./serial/start_receive.sh",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 # ======================== 默认配置 ========================
 DEFAULT_PORT = "/dev/ttyUSB0"
@@ -82,7 +91,7 @@ def receive_framed(ser: serial.Serial, timeout: float = 0):
 
                 # 尝试从缓冲区中提取完整帧
                 while len(buf) >= FRAME_LEN:
-                    header_idx = buf.find(HEADER)
+                    header_idx = buf.find(bytes((HEADER,)))
                     if header_idx == -1:
                         # 没找到帧头，清空缓冲区（或保留最后 FRAME_LEN-1 字节以防帧头被截断）
                         print_hex(bytes(buf[:header_idx]) if header_idx > 0 else b"", "丢弃")

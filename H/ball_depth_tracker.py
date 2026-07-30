@@ -22,7 +22,7 @@ from udp_video_stream import StreamConfig, StreamError, UdpH264Streamer
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_TRANSFORM = SCRIPT_DIR / "camera_to_base.json"
 DEFAULT_ENGINE = SCRIPT_DIR / "weights" / "steel_ball_best_legacy.engine"
-DEFAULT_PT = SCRIPT_DIR / "weights" / "steel_ball_best_2.pt"
+DEFAULT_PT = SCRIPT_DIR / "weights" / "steel_ball_v5.pt"
 DEFAULT_BALL_RADIUS_M = 0.005
 
 
@@ -479,6 +479,10 @@ def main() -> int:
             if not color_frame or not depth_frame:
                 continue
 
+            # 在任何图像转换和YOLO推理之前记录采集时刻。控制器使用该单调
+            # 时钟估计速度/加速度，避免把推理耗时抖动误当成小球运动。
+            capture_monotonic_ms = time.perf_counter() * 1000.0
+            realsense_timestamp_ms = float(color_frame.get_timestamp())
             color = np.asanyarray(color_frame.get_data())
             depth_raw = np.asanyarray(depth_frame.get_data())
             # 直接读取 RealSense 设备随当前彩色流发布的出厂标定内参。
@@ -567,6 +571,15 @@ def main() -> int:
                 max_bbox_width_ratio=args.max_bbox_width_ratio,
                 max_bbox_height_ratio=args.max_bbox_height_ratio,
                 ball_radius_m=args.ball_radius_m,
+            )
+            record["capture_monotonic_ms"] = round(
+                capture_monotonic_ms, 3
+            )
+            record["realsense_timestamp_ms"] = round(
+                realsense_timestamp_ms, 3
+            )
+            record["processing_latency_ms"] = round(
+                time.perf_counter() * 1000.0 - capture_monotonic_ms, 3
             )
 
             if args.print_every > 0 and frame_index % args.print_every == 0:

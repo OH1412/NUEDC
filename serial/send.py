@@ -1,101 +1,157 @@
 #!/usr/bin/env python3
-"""
-串口发送程序
-协议格式: 0x92 + 6字节数据 + 0x29
+"""持续向单片机发送管道目标倾角。
 
-用法:
-    python3 send.py                        # 发送默认数据 0x06 0x07 0x08 0x09 0x0a 0x0b
-    python3 send.py 0x01 0x02 0x03 0x04 0x05 0x06   # 发送指定6字节数据
-    python3 send.py 1 2 3 4 5 6           # 支持十进制
-    python3 send.py --port /dev/ttyUSB1   # 指定串口
-    python3 send.py --baud 9600           # 指定波特率
+协议为恰好 8 个二进制字节：
+
+    [0x92, 符号, 整数部分, 两位小数部分, 0, 0, 0, 0x29]
+
+示例：
+
+    python3 serial/send.py 12.34
+    python3 serial/send.py -8.50 --rate-hz 50
+    python3 serial/send.py 10 --once
+    python3 serial/send.py 0 --port /dev/ttyUSB1 --baud 9600
+
+未指定 ``--once`` 时保持串口打开，并默认以 50 Hz 重复发送。
 """
 
-import serial
 import argparse
 import sys
 import time
-
-# ======================== 默认配置 ========================
-DEFAULT_PORT = "/dev/ttyUSB0"
-DEFAULT_BAUD = 9600
-DEFAULT_DATA = [0x01, 0x03, 0x05, 0x07, 0x09, 0x11]
-
-HEADER = 0x92
-FOOTER = 0x29
+from pathlib import Path
+from typing import Optional, Sequence
 
 
-def parse_byte(val: str) -> int:
-    """解析字节值，支持 0x 前缀（十六进制）或纯十进制"""
-    val = val.strip()
-    if val.lower().startswith("0x"):
-        return int(val, 16)
-    return int(val)
+# 本目录名为 serial，与 pyserial 的导入名冲突。协议实现放在 H 中，
+# 这里按文件位置显式加入路径，避免把本地 serial/ 当作 Python 包。
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+H_DIR = REPOSITORY_ROOT / "H"
+if str(H_DIR) not in sys.path:
+    sys.path.insert(0, str(H_DIR))
+
+from angle_serial import (  # noqa: E402
+    DEFAULT_BAUD,
+    DEFAULT_PORT,
+    DEFAULT_RATE_HZ,
+    MOTOR_ENABLE_FRAME,
+    MOTOR_INITIAL_ZERO_FRAME,
+    AngleEncodingError,
+    PeriodicAngleSender,
+    SerialDependencyError,
+    encode_angle,
+)
 
 
-def build_frame(data: list[int]) -> bytes:
-    """构建发送帧: HEADER + 6字节数据 + FOOTER"""
-    if len(data) != 6:
-        print(f"错误: 数据必须是6字节，当前为 {len(data)} 字节", file=sys.stderr)
-        sys.exit(1)
-    for b in data:
-        if not (0 <= b <= 255):
-            print(f"错误: 数据值 {b} 超出范围 (0-255)", file=sys.stderr)
-            sys.exit(1)
-
-    frame = bytes([HEADER] + data + [FOOTER])
-    return frame
-
-
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="串口发送程序 — 向单片机发送 8 字节帧",
-        epilog="示例: python3 send.py 0x01 0x02 0x03 0x04 0x05 0x06",
+        description="按 0x92 + 6字节数据 + 0x29 协议持续发送管道目标倾角",
+        epilog=(
+            "示例: python3 serial/send.py -12.34 --rate-hz 50；"
+            "输出为 92 01 0C 22 00 00 00 29"
+        ),
     )
     parser.add_argument(
-        "data",
-        nargs="*",
-        help="6字节数据 (十六进制如 0x06 或十进制如 6)",
+        "angle",
+        help="目标倾角（度），范围 [-30, 30]；正角表示电机端抬升",
     )
-    parser.add_argument("--port", "-p", default=DEFAULT_PORT, help=f"串口设备 (默认: {DEFAULT_PORT})")
-    parser.add_argument("--baud", "-b", type=int, default=DEFAULT_BAUD, help=f"波特率 (默认: {DEFAULT_BAUD})")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--port",
+        "-p",
+        default=DEFAULT_PORT,
+        help="串口设备（默认: %(default)s）",
+    )
+    parser.add_argument(
+        "--baud",
+        "-b",
+        type=int,
+        default=DEFAULT_BAUD,
+        help="串口波特率（默认: %(default)s）",
+    )
+    parser.add_argument(
+        "--rate-hz",
+        type=float,
+        default=DEFAULT_RATE_HZ,
+        help="连续发送频率，不得低于 20 Hz（默认: %(default)s）",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="只发送一次，供协议和接线调试",
+    )
+    return parser
 
-    # 解析数据
-    if args.data:
-        if len(args.data) != 6:
-            print(f"错误: 必须提供恰好6字节数据，当前为 {len(args.data)} 字节", file=sys.stderr)
-            sys.exit(1)
-        try:
-            data = [parse_byte(v) for v in args.data]
-        except ValueError as e:
-            print(f"错误: 无法解析数据值: {e}", file=sys.stderr)
-            sys.exit(1)
-    else:
-        data = DEFAULT_DATA
-        print(f"未指定数据，使用默认值: {[f'0x{b:02X}' for b in data]}")
 
-    # 构建帧
-    frame = build_frame(data)
+def format_hex(data: bytes) -> str:
+    return " ".join("0x{:02X}".format(value) for value in data)
 
-    # 打印即将发送的内容
-    print(f"串口: {args.port} | 波特率: {args.baud}")
-    print(f"发送帧: {' '.join(f'0x{b:02X}' for b in frame)}")
-    print()
 
-    # 打开串口并发送
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
     try:
-        ser = serial.Serial(args.port, args.baud, timeout=0.5)
-        # 等待串口就绪
+        frame = encode_angle(args.angle)
+        sender = PeriodicAngleSender.open(
+            port=args.port,
+            baudrate=args.baud,
+            rate_hz=args.rate_hz,
+            initial_angle_deg=args.angle,
+        )
+    except (AngleEncodingError, SerialDependencyError, ValueError, OSError) as exc:
+        parser.error(str(exc))
+
+    try:
+        # 给 USB-UART 和可能因开串口复位的单片机留出稳定时间。
         time.sleep(0.1)
-        ser.write(frame)
-        ser.flush()
-        print("✅ 发送成功!")
-        ser.close()
-    except serial.SerialException as e:
-        print(f"❌ 串口错误: {e}", file=sys.stderr)
-        sys.exit(1)
+        print(
+            "串口 {} @ {} baud | 电机使能 {} | 初始化0° {} | "
+            "倾角 {}° | 数据 {}"
+            .format(
+                args.port,
+                args.baud,
+                format_hex(MOTOR_ENABLE_FRAME),
+                format_hex(MOTOR_INITIAL_ZERO_FRAME),
+                args.angle,
+                format_hex(frame),
+            )
+        )
+
+        if args.once:
+            sender.send_once()
+            print("发送完成（单次）")
+            return 0
+
+        sender.start()
+        print(
+            "正在以 {:.2f} Hz 持续发送，按 Ctrl+C 停止。".format(
+                sender.rate_hz
+            )
+        )
+        while sender.is_running:
+            sender.raise_if_failed()
+            time.sleep(0.1)
+        sender.raise_if_failed()
+        return 0
+    except KeyboardInterrupt:
+        print("\n已停止发送。")
+        return 0
+    except Exception as exc:
+        print("串口发送失败: {}".format(exc), file=sys.stderr)
+        return 1
+    finally:
+        if not args.once:
+            try:
+                # 后台线程可能已经缓存了一帧旧角度。必须先把待发值改成0，
+                # 再停止线程，最后同步发0；否则旧非零帧可能排在0°之后。
+                sender.stop_and_send_zero()
+                print("退出前已发送 0°。")
+            except Exception as exc:
+                print(
+                    "警告：退出归零发送失败: {}".format(exc),
+                    file=sys.stderr,
+                )
+        sender.close()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
