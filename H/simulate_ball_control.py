@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trials", type=int, default=30)
     parser.add_argument("--duration-s", type=float, default=20.0)
     parser.add_argument("--seed", type=int, default=20260730)
-    parser.add_argument("--working-angle-limit-deg", type=float, default=10.0)
+    parser.add_argument("--working-angle-limit-deg", type=float, default=2.0)
     parser.add_argument(
         "--tune-pid",
         action="store_true",

@@ -16,10 +16,14 @@ if str(H_DIR) not in sys.path:
 
 from angle_serial import (  # noqa: E402
     AngleEncodingError,
+    MAX_ANGLE_DEG,
     MOTOR_ENABLE_FRAME,
     MOTOR_INITIAL_ZERO_FRAME,
     PeriodicAngleSender,
+    angle_to_motor_displacement_mm,
+    angle_to_serial_displacement_mm,
     encode_angle,
+    encode_motor_displacement_mm,
     open_serial_port,
     validate_rate_hz,
 )
@@ -76,11 +80,11 @@ class AngleEncodingTests(unittest.TestCase):
     def test_exact_wire_examples(self) -> None:
         cases = (
             (0, bytes((0x92, 0x00, 0x00, 0x00, 0, 0, 0, 0x29))),
-            (10, bytes((0x92, 0x00, 0x0A, 0x00, 0, 0, 0, 0x29))),
-            (12.34, bytes((0x92, 0x00, 0x0C, 0x22, 0, 0, 0, 0x29))),
-            (-12.34, bytes((0x92, 0x01, 0x0C, 0x22, 0, 0, 0, 0x29))),
-            (30, bytes((0x92, 0x00, 0x1E, 0x00, 0, 0, 0, 0x29))),
-            (-30, bytes((0x92, 0x01, 0x1E, 0x00, 0, 0, 0, 0x29))),
+            (10, bytes((0x92, 0x00, 0x2C, 0x08, 0, 0, 0, 0x29))),
+            (12.34, bytes((0x92, 0x00, 0x36, 0x45, 0, 0, 0, 0x29))),
+            (-12.34, bytes((0x92, 0x01, 0x36, 0x45, 0, 0, 0, 0x29))),
+            (21.80, bytes((0x92, 0x00, 0x63, 0x63, 0, 0, 0, 0x29))),
+            (-21.80, bytes((0x92, 0x01, 0x63, 0x63, 0, 0, 0, 0x29))),
         )
         for angle, expected in cases:
             with self.subTest(angle=angle):
@@ -89,38 +93,71 @@ class AngleEncodingTests(unittest.TestCase):
     def test_protocol_has_header_six_data_bytes_and_footer(self) -> None:
         frame = encode_angle("12.34")
         self.assertEqual(len(frame), 8)
-        self.assertEqual(frame, b"\x92\x00\x0c\x22\x00\x00\x00\x29")
+        self.assertEqual(frame, b"\x92\x00\x36\x45\x00\x00\x00\x29")
         self.assertEqual(frame[0], 0x92)
         self.assertEqual(frame[-1], 0x29)
         self.assertEqual(len(frame[1:7]), 6)
 
-    def test_rounds_half_up_and_carries_into_integer_part(self) -> None:
+    def test_displacement_rounds_half_up_and_carries(self) -> None:
         self.assertEqual(
-            encode_angle("1.005"),
+            encode_motor_displacement_mm("1.005"),
             bytes((0x92, 0x00, 0x01, 0x01, 0, 0, 0, 0x29)),
         )
         self.assertEqual(
-            encode_angle("9.995"),
+            encode_motor_displacement_mm("9.995"),
             bytes((0x92, 0x00, 0x0A, 0x00, 0, 0, 0, 0x29)),
         )
         self.assertEqual(
-            encode_angle("29.999"),
-            bytes((0x92, 0x00, 0x1E, 0x00, 0, 0, 0, 0x29)),
+            encode_motor_displacement_mm("99.994"),
+            bytes((0x92, 0x00, 0x63, 0x63, 0, 0, 0, 0x29)),
         )
 
     def test_quantized_zero_never_has_negative_sign(self) -> None:
         zero = bytes((0x92, 0x00, 0x00, 0x00, 0, 0, 0, 0x29))
         self.assertEqual(encode_angle(-0.0), zero)
-        self.assertEqual(encode_angle("-0.004"), zero)
+        self.assertEqual(encode_motor_displacement_mm("-0.004"), zero)
         self.assertEqual(
-            encode_angle("-0.005"),
+            encode_motor_displacement_mm("-0.005"),
             bytes((0x92, 0x01, 0x00, 0x01, 0, 0, 0, 0x29)),
         )
 
+    def test_ideal_linkage_formula_and_sign(self) -> None:
+        self.assertAlmostEqual(
+            angle_to_motor_displacement_mm(10.0),
+            250.0 * math.tan(math.radians(10.0)),
+        )
+        self.assertAlmostEqual(
+            angle_to_motor_displacement_mm(-10.0),
+            -angle_to_motor_displacement_mm(10.0),
+        )
+        self.assertAlmostEqual(
+            angle_to_serial_displacement_mm(10.0),
+            angle_to_motor_displacement_mm(10.0),
+        )
+        self.assertEqual(str(MAX_ANGLE_DEG), "21.80")
+
+    def test_motor_displacement_scale_only_changes_wire_mm(self) -> None:
+        ideal = angle_to_motor_displacement_mm(10.0)
+        self.assertAlmostEqual(
+            angle_to_motor_displacement_mm(10.0, 0.8),
+            ideal * 0.8,
+        )
+        self.assertEqual(
+            encode_angle(10.0, 0.8),
+            bytes((0x92, 0x00, 0x23, 0x1B, 0, 0, 0, 0x29)),
+        )
+
+    def test_positive_and_negative_scales_are_independent(self) -> None:
+        positive = angle_to_motor_displacement_mm(10.0, 0.8, 0.5)
+        negative = angle_to_motor_displacement_mm(-10.0, 0.8, 0.5)
+        ideal = 250.0 * math.tan(math.radians(10.0))
+        self.assertAlmostEqual(positive, ideal * 0.8)
+        self.assertAlmostEqual(negative, -ideal * 0.5)
+
     def test_rejects_out_of_range_nonfinite_and_non_numeric_values(self) -> None:
         invalid_values = (
-            30.001,
-            -30.001,
+            21.801,
+            -21.801,
             float("nan"),
             float("inf"),
             float("-inf"),
@@ -132,6 +169,9 @@ class AngleEncodingTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(AngleEncodingError):
                     encode_angle(value)
+        for value in (100.0, -100.0):
+            with self.assertRaises(AngleEncodingError):
+                encode_motor_displacement_mm(value)
 
     def test_rate_must_be_finite_and_at_least_twenty_hertz(self) -> None:
         self.assertEqual(validate_rate_hz(20), 20.0)
@@ -147,13 +187,52 @@ class PeriodicSenderTests(unittest.TestCase):
         sender = PeriodicAngleSender(FakeSerial())
         self.assertEqual(sender.rate_hz, 50.0)
 
+    def test_scale_can_change_live_and_reencodes_current_angle(self) -> None:
+        sender = PeriodicAngleSender(
+            FakeSerial(), initial_angle_deg=10.0
+        )
+        self.assertEqual(sender.latest_frame, encode_angle(10.0))
+        sender.set_motor_displacement_scale(0.8)
+        self.assertEqual(sender.motor_displacement_scale, 0.8)
+        self.assertEqual(sender.latest_frame, encode_angle(10.0, 0.8))
+
+        sender.set_motor_displacement_scales(0.7, 0.4)
+        self.assertEqual(sender.motor_displacement_scale, 0.7)
+        self.assertEqual(sender.negative_motor_displacement_scale, 0.4)
+        sender.set_angle(-10.0)
+        self.assertEqual(sender.latest_frame, encode_angle(-10.0, 0.7, 0.4))
+
+    def test_angle_smoothing_limits_each_command_update(self) -> None:
+        serial_port = FakeSerial()
+        sender = PeriodicAngleSender(serial_port, initial_angle_deg=0.0)
+        sender.set_max_angle_command_step_deg(0.2)
+        sender.set_angle(1.0)
+        self.assertEqual(sender.target_angle_deg, 1.0)
+        self.assertAlmostEqual(sender.latest_angle_deg, 0.0)
+        sender.send_once()
+        self.assertAlmostEqual(sender.latest_angle_deg, 0.2)
+        self.assertEqual(sender.latest_frame, encode_angle(0.2))
+        # 新目标覆盖旧目标，不保存或继续执行旧目标的剩余平滑序列。
+        sender.set_angle(-1.0)
+        self.assertEqual(sender.target_angle_deg, -1.0)
+        sender.send_once()
+        self.assertAlmostEqual(sender.latest_angle_deg, 0.0)
+        sender.send_once()
+        self.assertAlmostEqual(sender.latest_angle_deg, -0.2)
+        sender.set_angle(1.0)
+        sender.send_once()
+        self.assertAlmostEqual(sender.latest_angle_deg, 0.0)
+        sender.force_angle(0.0)
+        self.assertEqual(sender.latest_angle_deg, 0.0)
+        self.assertEqual(sender.latest_frame, encode_angle(0.0))
+
     def test_send_once_writes_and_flushes_exact_payload(self) -> None:
         serial_port = FakeSerial()
         sender = PeriodicAngleSender(serial_port, initial_angle_deg=-8.5)
 
         frame = sender.send_once()
 
-        self.assertEqual(frame, b"\x92\x01\x08\x32\x00\x00\x00\x29")
+        self.assertEqual(frame, b"\x92\x01\x25\x24\x00\x00\x00\x29")
         self.assertEqual(
             serial_port.writes,
             [MOTOR_ENABLE_FRAME, MOTOR_INITIAL_ZERO_FRAME, frame],
@@ -224,6 +303,42 @@ class PeriodicSenderTests(unittest.TestCase):
         sender.stop()
         self.assertFalse(sender.is_running)
         self.assertFalse(serial_port.closed)
+
+    def test_pause_stops_all_periodic_writes_until_resume(self) -> None:
+        serial_port = FakeSerial()
+        sender = PeriodicAngleSender(serial_port, rate_hz=100)
+        self.addCleanup(sender.close)
+        sender.start()
+        self.assertTrue(
+            serial_port.wait_until(lambda writes: len(writes) >= 4)
+        )
+        sender.pause_sending()
+        paused_count = len(serial_port.writes)
+        sender.set_angle(2.0)
+        time.sleep(0.05)
+        self.assertEqual(len(serial_port.writes), paused_count)
+        sender.resume_sending()
+        self.assertTrue(
+            serial_port.wait_until(
+                lambda writes: len(writes) > paused_count
+            )
+        )
+
+    def test_paused_sender_can_write_one_final_bias_then_stays_silent(self) -> None:
+        serial_port = FakeSerial()
+        sender = PeriodicAngleSender(serial_port, rate_hz=100)
+        self.addCleanup(sender.close)
+        sender.start()
+        self.assertTrue(
+            serial_port.wait_until(lambda writes: len(writes) >= 4)
+        )
+        sender.pause_sending()
+        sender.force_angle(-0.45)
+        sender.send_once()
+        final_count = len(serial_port.writes)
+        self.assertEqual(serial_port.writes[-1], encode_angle(-0.45))
+        time.sleep(0.05)
+        self.assertEqual(len(serial_port.writes), final_count)
 
     def test_stop_and_send_zero_makes_zero_the_final_frame(self) -> None:
         serial_port = FakeSerial()

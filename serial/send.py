@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""持续向单片机发送管道目标倾角。
+"""输入管道目标倾角，换算电机升降毫米数后持续发送。
 
 协议为恰好 8 个二进制字节：
 
@@ -38,21 +38,27 @@ from angle_serial import (  # noqa: E402
     AngleEncodingError,
     PeriodicAngleSender,
     SerialDependencyError,
+    angle_to_serial_displacement_mm,
     encode_angle,
 )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="按 0x92 + 6字节数据 + 0x29 协议持续发送管道目标倾角",
+        description=(
+            "把目标倾角按250*tan(theta)换成电机升降mm后持续发送"
+        ),
         epilog=(
-            "示例: python3 serial/send.py -12.34 --rate-hz 50；"
-            "输出为 92 01 0C 22 00 00 00 29"
+            "示例: python3 serial/send.py 10 --rate-hz 50；"
+            "10°换算+44.08mm，输出92 00 2C 08 00 00 00 29"
         ),
     )
     parser.add_argument(
         "angle",
-        help="目标倾角（度），范围 [-30, 30]；正角表示电机端抬升",
+        help=(
+            "目标倾角（度），范围[-21.80,+21.80]；"
+            "正角抬升、负角下降"
+        ),
     )
     parser.add_argument(
         "--port",
@@ -91,6 +97,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         frame = encode_angle(args.angle)
+        displacement_mm = angle_to_serial_displacement_mm(args.angle)
         sender = PeriodicAngleSender.open(
             port=args.port,
             baudrate=args.baud,
@@ -105,13 +112,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         time.sleep(0.1)
         print(
             "串口 {} @ {} baud | 电机使能 {} | 初始化0° {} | "
-            "倾角 {}° | 数据 {}"
+            "倾角 {}° | 电机升降 {:+.2f} mm | 数据 {}"
             .format(
                 args.port,
                 args.baud,
                 format_hex(MOTOR_ENABLE_FRAME),
                 format_hex(MOTOR_INITIAL_ZERO_FRAME),
                 args.angle,
+                displacement_mm,
                 format_hex(frame),
             )
         )

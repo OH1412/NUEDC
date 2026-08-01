@@ -2,6 +2,7 @@
 """钢珠一维状态估计、串级PID和轻量约束MPC。"""
 
 from dataclasses import dataclass
+from collections import deque
 import math
 import time
 from typing import Any, Dict, Optional, Sequence
@@ -10,6 +11,15 @@ import numpy as np
 
 
 GRAVITY_M_S2 = 9.81
+
+# 运行期临时局部角度零点，不写配置或参数方案。钢珠持续收到非零命令却
+# 几乎不动时，把当前倾角吸收到临时零点。运动中不能突然清零，否则偏置
+# 阶跃会让钢珠回弹；它只在控制器安全重置时遗忘，新停滞点可覆盖旧值。
+DEFAULT_LOCAL_ZERO_STALL_TIME_S = 2.0
+LOCAL_ZERO_POSITION_TOLERANCE_M = 0.0015
+LOCAL_ZERO_MAX_SPEED_M_S = 0.003
+LOCAL_ZERO_MIN_COMMAND_DEG = 0.2
+LOCAL_ZERO_MAX_ABS_DEG = 1.2
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
@@ -259,6 +269,89 @@ class KinematicKalmanFilter:
         )
 
 
+class VelocityLowPassFilter:
+    """一阶低通加静止钳零，抑制位置微抖造成的速度尖峰。"""
+
+    def __init__(
+        self,
+        time_constant_s: float = 0.12,
+        stationary_window_s: float = 0.4,
+        stationary_position_span_m: float = 0.0008,
+        stationary_velocity_threshold_m_s: float = 0.001,
+    ) -> None:
+        self.time_constant_s = float(time_constant_s)
+        self.stationary_window_s = float(stationary_window_s)
+        self.stationary_position_span_m = float(stationary_position_span_m)
+        self.stationary_velocity_threshold_m_s = float(
+            stationary_velocity_threshold_m_s
+        )
+        if not all(
+            math.isfinite(value) and value > 0.0
+            for value in (
+                self.time_constant_s,
+                self.stationary_window_s,
+                self.stationary_position_span_m,
+                self.stationary_velocity_threshold_m_s,
+            )
+        ):
+            raise ValueError("速度滤波参数必须为有限正数。")
+        self.value_m_s: Optional[float] = None
+        self.timestamp_s: Optional[float] = None
+        self.position_history = deque()
+
+    def reset(self) -> None:
+        self.value_m_s = None
+        self.timestamp_s = None
+        self.position_history.clear()
+
+    def update(
+        self,
+        velocity_m_s: float,
+        timestamp_s: float,
+        position_m: Optional[float] = None,
+    ) -> float:
+        velocity = float(velocity_m_s)
+        timestamp = float(timestamp_s)
+        if not math.isfinite(velocity) or not math.isfinite(timestamp):
+            raise ValueError("速度低通输入必须是有限值。")
+        position = None if position_m is None else float(position_m)
+        if position is not None and not math.isfinite(position):
+            raise ValueError("速度滤波位置输入必须是有限值。")
+        if self.value_m_s is None or self.timestamp_s is None:
+            self.value_m_s = velocity
+            self.timestamp_s = timestamp
+            if position is not None:
+                self.position_history.append((timestamp, position))
+            return velocity
+        dt = timestamp - self.timestamp_s
+        if dt <= 0.0:
+            return self.value_m_s
+        alpha = 1.0 - math.exp(-dt / self.time_constant_s)
+        self.value_m_s += alpha * (velocity - self.value_m_s)
+        self.timestamp_s = timestamp
+        if position is not None:
+            self.position_history.append((timestamp, position))
+            oldest_allowed_s = timestamp - self.stationary_window_s
+            while (
+                len(self.position_history) > 1
+                and self.position_history[0][0] < oldest_allowed_s
+            ):
+                self.position_history.popleft()
+            history_duration_s = (
+                self.position_history[-1][0] - self.position_history[0][0]
+            )
+            positions = [sample[1] for sample in self.position_history]
+            position_span_m = max(positions) - min(positions)
+            if (
+                history_duration_s >= self.stationary_window_s * 0.9
+                and position_span_m <= self.stationary_position_span_m
+                and abs(self.value_m_s)
+                <= self.stationary_velocity_threshold_m_s
+            ):
+                self.value_m_s = 0.0
+        return self.value_m_s
+
+
 class AngleRateLimiter:
     def __init__(
         self,
@@ -293,45 +386,45 @@ class AngleRateLimiter:
         return self.value_deg
 
 
-class CascadePIDController:
-    """外环位置到速度、内环速度到角度的串级PI控制器。"""
+class PureCascadePIDController:
+    """不带预停、死区、补偿、局部零点和软件限幅的纯串级PID。"""
 
-    def __init__(
-        self,
-        config: Dict[str, Any],
-        angle_min_deg: float,
-        angle_max_deg: float,
-        max_angle_step_deg: float,
-        safety_config: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        self.config = config
-        self.safety = safety_config or {}
-        self.angle_min_deg = float(angle_min_deg)
-        self.angle_max_deg = float(angle_max_deg)
-        self.rate_limiter = AngleRateLimiter(
-            angle_min_deg, angle_max_deg, max_angle_step_deg
-        )
+    REQUIRED_KEYS = (
+        "position_kp_s_inv",
+        "position_ki_s2_inv",
+        "position_kd",
+        "velocity_kp_deg_per_m_s",
+        "velocity_ki_deg_per_m",
+        "velocity_kd",
+    )
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        self.config: Dict[str, float] = {}
+        self.set_config(config)
         self.outer_integral = 0.0
         self.inner_integral = 0.0
+        self.previous_velocity_error: Optional[float] = None
         self.last_velocity_reference_m_s = 0.0
         self.last_raw_angle_deg = 0.0
-        self.static_compensation_deg = 0.0
-        self.approach_direction: Optional[int] = None
-        self.active_target_offset_m = 0.0
-        self.target_refinement_dwell_s = 0.0
-        self.target_refinement_unlocked = False
+
+    def set_config(self, config: Dict[str, Any]) -> None:
+        """实时替换六个增益；保留当前积分与微分历史。"""
+
+        values = {
+            key: float(config[key]) for key in self.REQUIRED_KEYS
+        }
+        if not all(math.isfinite(value) for value in values.values()):
+            raise ValueError("纯PID六个参数必须都是有限数。")
+        if any(value < 0.0 for value in values.values()):
+            raise ValueError("纯PID六个参数不能为负数。")
+        self.config = values
 
     def reset(self, angle_deg: float = 0.0) -> None:
         self.outer_integral = 0.0
         self.inner_integral = 0.0
+        self.previous_velocity_error = None
         self.last_velocity_reference_m_s = 0.0
-        self.last_raw_angle_deg = 0.0
-        self.static_compensation_deg = 0.0
-        self.approach_direction = None
-        self.active_target_offset_m = 0.0
-        self.target_refinement_dwell_s = 0.0
-        self.target_refinement_unlocked = False
-        self.rate_limiter.reset(angle_deg)
+        self.last_raw_angle_deg = float(angle_deg)
 
     def update(
         self,
@@ -340,10 +433,203 @@ class CascadePIDController:
         target_position_m: float,
         dt_s: float,
     ) -> float:
+        dt = max(float(dt_s), 1e-6)
+        position_error = float(target_position_m) - float(position_m)
+        self.outer_integral += position_error * dt
+        # 目标位置固定，所以位置误差导数就是-实际速度。
+        position_error_derivative = -float(velocity_m_s)
+        velocity_reference = (
+            self.config["position_kp_s_inv"] * position_error
+            + self.config["position_ki_s2_inv"] * self.outer_integral
+            + self.config["position_kd"] * position_error_derivative
+        )
+        velocity_error = velocity_reference - float(velocity_m_s)
+        self.inner_integral += velocity_error * dt
+        velocity_error_derivative = (
+            0.0
+            if self.previous_velocity_error is None
+            else (velocity_error - self.previous_velocity_error) / dt
+        )
+        self.previous_velocity_error = velocity_error
+        # 正角使钢珠向-x运动，因此控制输出带负号。
+        angle_deg = -(
+            self.config["velocity_kp_deg_per_m_s"] * velocity_error
+            + self.config["velocity_ki_deg_per_m"] * self.inner_integral
+            + self.config["velocity_kd"] * velocity_error_derivative
+        )
+        self.last_velocity_reference_m_s = velocity_reference
+        self.last_raw_angle_deg = angle_deg
+        return angle_deg
+
+
+class CascadePIDController:
+    """外环位置到速度、内环速度到角度的复杂串级PID控制器。"""
+
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        angle_min_deg: float,
+        angle_max_deg: float,
+        max_angle_step_deg: float,
+        safety_config: Optional[Dict[str, Any]] = None,
+        coordinate_center_m: Optional[float] = None,
+    ) -> None:
+        self.config = config
+        self.safety = safety_config or {}
+        self.coordinate_center_m = (
+            None
+            if coordinate_center_m is None
+            else float(coordinate_center_m)
+        )
+        self.angle_min_deg = float(angle_min_deg)
+        self.angle_max_deg = float(angle_max_deg)
+        self.rate_limiter = AngleRateLimiter(
+            angle_min_deg, angle_max_deg, max_angle_step_deg
+        )
+        self.outer_integral = 0.0
+        self.inner_integral = 0.0
+        self.previous_velocity_error: Optional[float] = None
+        self.last_velocity_reference_m_s = 0.0
+        self.last_raw_angle_deg = 0.0
+        self.static_compensation_deg = 0.0
+        self.stall_drive_boost_angle_deg = 0.0
+        self.stall_drive_adaptation_active = False
+        self.approach_direction: Optional[int] = None
+        self.active_target_offset_m = 0.0
+        self.target_refinement_dwell_s = 0.0
+        self.target_refinement_unlocked = False
+        self.local_zero_angle_deg = 0.0
+        self.local_zero_position_m: Optional[float] = None
+        self.local_zero_stall_reference_m: Optional[float] = None
+        self.local_zero_stall_duration_s = 0.0
+        self.local_zero_update_count = 0
+        self.last_calibrated_stall_snap_angle_deg: Optional[float] = None
+
+    def reset(self, angle_deg: float = 0.0) -> None:
+        self.outer_integral = 0.0
+        self.inner_integral = 0.0
+        self.previous_velocity_error = None
+        self.last_velocity_reference_m_s = 0.0
+        self.last_raw_angle_deg = 0.0
+        self.static_compensation_deg = 0.0
+        self.stall_drive_boost_angle_deg = 0.0
+        self.stall_drive_adaptation_active = False
+        self.approach_direction = None
+        self.active_target_offset_m = 0.0
+        self.target_refinement_dwell_s = 0.0
+        self.target_refinement_unlocked = False
+        self.local_zero_angle_deg = 0.0
+        self.local_zero_position_m = None
+        self.local_zero_stall_reference_m = None
+        self.local_zero_stall_duration_s = 0.0
+        self.last_calibrated_stall_snap_angle_deg = None
+        self.rate_limiter.reset(angle_deg)
+
+    def calibrated_stall_angle_for_target(
+        self, target_position_m: float
+    ) -> Optional[float]:
+        """返回目标区间的停滞增驱快速起点；未命中则用原逻辑。"""
+
+        settings = self.config.get("stall_calibrated_angle_snap", {})
+        if not isinstance(settings, dict) or not bool(
+            settings.get("enabled", False)
+        ) or self.coordinate_center_m is None:
+            return None
+        zones = settings.get("zones", [])
+        if not isinstance(zones, list):
+            raise ValueError("stall_calibrated_angle_snap.zones必须是数组。")
+        target_cm = (
+            float(target_position_m) - float(self.coordinate_center_m)
+        ) * 100.0
+        for zone in zones:
+            if not isinstance(zone, dict):
+                raise ValueError("停滞标定角区间必须是对象。")
+            minimum = float(zone.get("target_min_cm", -math.inf))
+            maximum = float(zone.get("target_max_cm", math.inf))
+            angle_deg = float(zone["angle_deg"])
+            if not all(
+                math.isfinite(value)
+                for value in (angle_deg,)
+            ) or minimum > maximum:
+                raise ValueError("停滞标定角区间配置无效。")
+            # 相邻区间共用边界时，配置顺序决定边界归属。
+            if minimum <= target_cm <= maximum:
+                return clamp(
+                    angle_deg, self.angle_min_deg, self.angle_max_deg
+                )
+        return None
+
+    def update(
+        self,
+        position_m: float,
+        velocity_m_s: float,
+        target_position_m: float,
+        dt_s: float,
+        feedforward_angle_deg: float = 0.0,
+    ) -> float:
         dt = clamp(dt_s, 0.005, 0.20)
         requested_position_error = float(
             target_position_m - position_m
         )
+        motor_hold_deadband_m = max(
+            0.0, float(self.config.get("position_deadband_m", 0.0))
+        )
+        stall_eligible = (
+            abs(requested_position_error) > motor_hold_deadband_m
+            and abs(float(velocity_m_s))
+            <= LOCAL_ZERO_MAX_SPEED_M_S
+            and abs(self.rate_limiter.value_deg)
+            >= LOCAL_ZERO_MIN_COMMAND_DEG
+        )
+        local_zero_stall_time_s = max(
+            0.0,
+            float(
+                self.config.get(
+                    "local_zero_stall_time_s",
+                    DEFAULT_LOCAL_ZERO_STALL_TIME_S,
+                )
+            ),
+        )
+        if stall_eligible:
+            if self.local_zero_stall_reference_m is None:
+                self.local_zero_stall_reference_m = float(position_m)
+                self.local_zero_stall_duration_s = 0.0
+            elif (
+                abs(
+                    float(position_m)
+                    - self.local_zero_stall_reference_m
+                )
+                <= LOCAL_ZERO_POSITION_TOLERANCE_M
+            ):
+                self.local_zero_stall_duration_s += dt
+            else:
+                self.local_zero_stall_reference_m = float(position_m)
+                self.local_zero_stall_duration_s = 0.0
+
+        else:
+            self.local_zero_stall_reference_m = None
+            self.local_zero_stall_duration_s = 0.0
+            self.stall_drive_adaptation_active = False
+        stall_mature = (
+            stall_eligible
+            and self.local_zero_stall_duration_s
+            >= local_zero_stall_time_s
+        )
+
+        # 目标附近且钢珠已经低速时，保持上一电机位置，不让视觉毫米级
+        # 抖动驱动执行器来回微调。若钢珠仍在快速运动则继续进入速度环
+        # 制动，不能仅因位置暂时经过死区就放弃刹车。
+        if (
+            abs(requested_position_error) <= motor_hold_deadband_m
+            and abs(float(velocity_m_s))
+            <= float(self.config.get("velocity_deadband_m_s", 0.0))
+            and abs(float(feedforward_angle_deg)) <= 1e-9
+        ):
+            self.last_velocity_reference_m_s = 0.0
+            self.last_raw_angle_deg = self.rate_limiter.value_deg
+            self.static_compensation_deg = 0.0
+            self.previous_velocity_error = None
+            return self.rate_limiter.value_deg
         if self.approach_direction is None:
             direction_threshold = float(
                 self.safety.get("internal_tolerance_m", 0.003)
@@ -358,14 +644,23 @@ class CascadePIDController:
                 self.active_target_offset_m = float(
                     self.safety.get("approach_target_offset_m", 0.0)
                 )
+        refinement_error_limit_m = max(
+            0.0,
+            float(
+                self.safety.get("target_refinement_error_m", 0.0)
+            ),
+        ) + max(
+            0.0,
+            float(
+                self.safety.get(
+                    "target_refinement_noise_margin_m", 0.0
+                )
+            ),
+        )
         refinement_condition = (
             self.approach_direction not in (None, 0)
             and abs(requested_position_error)
-            <= float(
-                self.safety.get(
-                    "target_refinement_error_m", 0.0
-                )
-            )
+            <= refinement_error_limit_m
             and abs(float(velocity_m_s))
             <= float(
                 self.safety.get(
@@ -418,8 +713,6 @@ class CascadePIDController:
         position_error = float(
             control_target_position_m - position_m
         )
-        if abs(position_error) < self.config["position_deadband_m"]:
-            position_error = 0.0
 
         self.outer_integral = clamp(
             self.outer_integral + position_error * dt,
@@ -429,9 +722,21 @@ class CascadePIDController:
         velocity_reference = (
             self.config["position_kp_s_inv"] * position_error
             + self.config["position_ki_s2_inv"] * self.outer_integral
+            + float(self.config.get("position_kd", 0.0))
+            * (-float(velocity_m_s))
         )
-        braking_distance = max(
-            abs(position_error) - self.config["braking_margin_m"], 0.0
+        distance_to_control_target = abs(position_error)
+        braking_margin = max(
+            0.0, float(self.config["braking_margin_m"])
+        )
+        # 旧公式 distance-margin 会在误差小于margin时直接得到0速度，
+        # 使钢珠永久停在预停点之前。改为连续软包络：margin越大越早
+        # 降速，但只有误差真正为0时速度上限才为0。
+        braking_distance = (
+            distance_to_control_target
+            if braking_margin <= 0.0
+            else distance_to_control_target ** 2
+            / (distance_to_control_target + braking_margin)
         )
         braking_speed_limit = math.sqrt(
             2.0
@@ -453,6 +758,13 @@ class CascadePIDController:
         ):
             velocity_error = 0.0
 
+        velocity_error_derivative = (
+            0.0
+            if self.previous_velocity_error is None
+            else (velocity_error - self.previous_velocity_error) / dt
+        )
+        self.previous_velocity_error = velocity_error
+
         candidate_inner = clamp(
             self.inner_integral + velocity_error * dt,
             -self.config["inner_integral_limit_deg"]
@@ -464,23 +776,37 @@ class CascadePIDController:
         raw_angle = -(
             self.config["velocity_kp_deg_per_m_s"] * velocity_error
             + self.config["velocity_ki_deg_per_m"] * candidate_inner
+            + float(self.config.get("velocity_kd", 0.0))
+            * velocity_error_derivative
         )
         # 低速静摩擦会使小角度命令完全不起作用。补偿从0缓慢爬升，并
-        # 只作为同向“最小起滚角”，不与PID角度相加；检测到运动或进入
-        # 目标附近后立即撤销，避免视觉速度滞后时再额外推一脚。
+        # 只作为同向“最小起滚角”，不与PID角度相加。两阶段控制在安全
+        # 预停点附近时，内部误差会远小于最终目标误差；只要还没进入最终
+        # 电机保持死区，就继续允许补偿建立，避免永远停在预停点附近。
         static_compensation_limit = float(
             self.config.get("static_friction_compensation_deg", 0.0)
         )
         desired_motion_direction = (
             1 if velocity_reference > 0.0 else -1
         )
+        outside_final_hold_deadband = (
+            abs(requested_position_error) > motor_hold_deadband_m
+        )
+        approaching_through_safe_pretarget = (
+            self.approach_direction not in (None, 0)
+            and self.active_target_offset_m > 0.0
+            and outside_final_hold_deadband
+        )
         static_compensation_eligible = (
             static_compensation_limit > 0.0
-            and abs(position_error)
-            >= float(
-                self.config.get(
-                    "static_compensation_min_error_m", math.inf
+            and (
+                abs(position_error)
+                >= float(
+                    self.config.get(
+                        "static_compensation_min_error_m", math.inf
+                    )
                 )
+                or approaching_through_safe_pretarget
             )
             and abs(velocity_m_s)
             <= float(
@@ -512,6 +838,113 @@ class CascadePIDController:
         else:
             self.static_compensation_deg = 0.0
 
+        boost_limit = max(
+            0.0, float(self.config.get("stall_drive_boost_max_deg", 0.0))
+        )
+        boost_ramp = max(
+            0.0,
+            float(self.config.get("stall_drive_boost_ramp_deg_s", 0.0)),
+        )
+
+        # 局部零点只吸收管段保持偏置，不能把当前仍会继续叠加的静摩擦
+        # 起滚量再次吸收进去。持续停滞增驱可以转入局部零点；若±1.2°
+        # 局部限幅吸收不完，剩余量继续留在增驱项，保证刷新前后无阶跃。
+        calibrated_stall_angle_deg: Optional[float] = None
+        calibrated_snap_command_deg: Optional[float] = None
+        if stall_mature:
+            calibrated_stall_angle_deg = (
+                self.calibrated_stall_angle_for_target(target_position_m)
+            )
+            # 标定角只是增驱快速起点，不是保持锁定值；触发之后若仍停滞，
+            # 原有stall_drive_boost仍继续沿所需方向逐帧增加。
+            self.stall_drive_adaptation_active = True
+            proportional_after_reset = -(
+                self.config["velocity_kp_deg_per_m_s"] * velocity_error
+                + float(self.config.get("velocity_kd", 0.0))
+                * velocity_error_derivative
+            )
+            dynamic_after_reset = proportional_after_reset
+            if static_compensation_eligible:
+                angle_direction = -float(desired_motion_direction)
+                dynamic_after_reset = angle_direction * max(
+                    angle_direction * dynamic_after_reset,
+                    self.static_compensation_deg,
+                )
+            far_drive_after_reset = max(
+                0.0, float(self.config.get("far_drive_angle_deg", 0.0))
+            )
+            if (
+                far_drive_after_reset > 0.0
+                and abs(position_error)
+                >= float(
+                    self.config.get("far_drive_min_error_m", math.inf)
+                )
+                and abs(velocity_reference) > 1e-9
+            ):
+                angle_direction = -float(desired_motion_direction)
+                dynamic_after_reset = angle_direction * max(
+                    angle_direction * dynamic_after_reset,
+                    far_drive_after_reset,
+                )
+            maximum_local_zero_deg = min(
+                abs(self.angle_min_deg),
+                abs(self.angle_max_deg),
+                LOCAL_ZERO_MAX_ABS_DEG,
+            )
+            if calibrated_stall_angle_deg is None:
+                transferable_bias = (
+                    self.rate_limiter.value_deg
+                    - dynamic_after_reset
+                    - float(feedforward_angle_deg)
+                )
+            else:
+                calibrated_direction = (
+                    1.0 if calibrated_stall_angle_deg > 0.0 else -1.0
+                )
+                calibrated_snap_command_deg = calibrated_direction * max(
+                    abs(calibrated_stall_angle_deg),
+                    calibrated_direction * self.rate_limiter.value_deg,
+                )
+                transferable_bias = (
+                    calibrated_snap_command_deg
+                    - dynamic_after_reset
+                    - float(feedforward_angle_deg)
+                )
+            learned_zero = clamp(
+                transferable_bias,
+                -maximum_local_zero_deg,
+                maximum_local_zero_deg,
+            )
+            if abs(learned_zero - self.local_zero_angle_deg) >= 0.01:
+                self.local_zero_angle_deg = learned_zero
+                self.local_zero_position_m = float(position_m)
+                self.inner_integral = 0.0
+                self.local_zero_update_count += 1
+            self.stall_drive_boost_angle_deg = clamp(
+                transferable_bias - learned_zero,
+                -boost_limit,
+                boost_limit,
+            )
+            self.last_calibrated_stall_snap_angle_deg = (
+                calibrated_stall_angle_deg
+            )
+            self.local_zero_stall_reference_m = float(position_m)
+            self.local_zero_stall_duration_s = 0.0
+        boost_target = 0.0
+        if (
+            stall_eligible
+            and self.stall_drive_adaptation_active
+            and abs(velocity_reference) > 1e-9
+        ):
+            boost_target = (
+                -boost_limit if velocity_reference > 0.0 else boost_limit
+            )
+        self.stall_drive_boost_angle_deg += clamp(
+            boost_target - self.stall_drive_boost_angle_deg,
+            -boost_ramp * dt,
+            boost_ramp * dt,
+        )
+
         # 实机远距离驱动力增强：误差仍很大时持续使用指定的同方向角度，
         # 不再受球速限制；进入目标附近后恢复普通PID与制动。
         far_drive_angle = max(
@@ -532,6 +965,18 @@ class CascadePIDController:
                 far_drive_angle,
             )
 
+        # 车辆正加速度方向为固定端->电机端，会使钢球朝固定端运动；
+        # 因此前馈倾角为负，使电机端下降并抵消该惯性扰动。
+        # 局部管段不水平时，把已学习的平衡角作为这一位置的临时角度零点；
+        # PID和外部前馈均在该零点基础上继续给出增量。
+        raw_angle += self.local_zero_angle_deg
+        raw_angle += float(feedforward_angle_deg)
+        raw_angle += self.stall_drive_boost_angle_deg
+        if calibrated_snap_command_deg is not None:
+            # 触发帧先跳到至少标定驱动力；已更强时不反向减弱。下一帧起
+            # 原持续停滞增驱会从这个新起点继续增加。
+            raw_angle = calibrated_snap_command_deg
+            self.rate_limiter.reset(raw_angle)
         saturated = clamp(
             raw_angle, self.angle_min_deg, self.angle_max_deg
         )
@@ -549,6 +994,211 @@ class CascadePIDController:
         ):
             self.inner_integral = candidate_inner
 
+        self.last_velocity_reference_m_s = velocity_reference
+        self.last_raw_angle_deg = raw_angle
+        return self.rate_limiter.update(saturated)
+
+    def update_velocity(
+        self,
+        position_m: float,
+        velocity_m_s: float,
+        target_velocity_m_s: float,
+        dt_s: float,
+        feedforward_angle_deg: float = 0.0,
+    ) -> float:
+        """绕过位置环，直接用速度PID跟踪给定速度，供实机调速度环。"""
+
+        dt = clamp(dt_s, 0.005, 0.20)
+        position = float(position_m)
+        velocity = float(velocity_m_s)
+        velocity_reference = float(target_velocity_m_s)
+        if not all(
+            math.isfinite(value)
+            for value in (
+                position,
+                velocity,
+                velocity_reference,
+                feedforward_angle_deg,
+            )
+        ):
+            raise ValueError("速度模式输入必须是有限值。")
+        stall_eligible = (
+            abs(velocity_reference) > 1e-9
+            and abs(velocity) <= LOCAL_ZERO_MAX_SPEED_M_S
+            and abs(self.rate_limiter.value_deg)
+            >= LOCAL_ZERO_MIN_COMMAND_DEG
+        )
+        local_zero_stall_time_s = max(
+            0.0,
+            float(
+                self.config.get(
+                    "local_zero_stall_time_s",
+                    DEFAULT_LOCAL_ZERO_STALL_TIME_S,
+                )
+            ),
+        )
+        if stall_eligible:
+            if self.local_zero_stall_reference_m is None:
+                self.local_zero_stall_reference_m = position
+                self.local_zero_stall_duration_s = 0.0
+            elif (
+                abs(position - self.local_zero_stall_reference_m)
+                <= LOCAL_ZERO_POSITION_TOLERANCE_M
+            ):
+                self.local_zero_stall_duration_s += dt
+            else:
+                self.local_zero_stall_reference_m = position
+                self.local_zero_stall_duration_s = 0.0
+        else:
+            self.local_zero_stall_reference_m = None
+            self.local_zero_stall_duration_s = 0.0
+            self.stall_drive_adaptation_active = False
+        stall_mature = (
+            stall_eligible
+            and self.local_zero_stall_duration_s
+            >= local_zero_stall_time_s
+        )
+        velocity_error = velocity_reference - velocity
+        velocity_error_derivative = (
+            0.0
+            if self.previous_velocity_error is None
+            else (velocity_error - self.previous_velocity_error) / dt
+        )
+        self.previous_velocity_error = velocity_error
+        candidate_inner = clamp(
+            self.inner_integral + velocity_error * dt,
+            -self.config["inner_integral_limit_deg"]
+            / max(self.config["velocity_ki_deg_per_m"], 1e-9),
+            self.config["inner_integral_limit_deg"]
+            / max(self.config["velocity_ki_deg_per_m"], 1e-9),
+        )
+        raw_angle = -(
+            self.config["velocity_kp_deg_per_m_s"] * velocity_error
+            + self.config["velocity_ki_deg_per_m"] * candidate_inner
+            + float(self.config.get("velocity_kd", 0.0))
+            * velocity_error_derivative
+        )
+
+        # 速度模式没有位置误差。只有目标速度非零、球速较低且当前确实
+        # 低于目标速度时才建立起滚补偿；实际速度已经超过目标时必须让
+        # 速度PID反向制动，不能被静摩擦补偿覆盖。
+        static_limit = max(
+            0.0,
+            float(
+                self.config.get("static_friction_compensation_deg", 0.0)
+            ),
+        )
+        static_eligible = (
+            static_limit > 0.0
+            and abs(velocity_reference) > 1e-9
+            and velocity_error * velocity_reference > 0.0
+            and abs(velocity)
+            <= float(
+                self.config.get("static_compensation_max_speed_m_s", 0.0)
+            )
+        )
+        if static_eligible:
+            ramp_rate = max(
+                0.0,
+                float(
+                    self.config.get("static_compensation_ramp_deg_s", 0.0)
+                ),
+            )
+            self.static_compensation_deg = min(
+                static_limit,
+                self.static_compensation_deg + ramp_rate * dt,
+            )
+            angle_direction = -1.0 if velocity_reference > 0.0 else 1.0
+            raw_angle = angle_direction * max(
+                angle_direction * raw_angle,
+                self.static_compensation_deg,
+            )
+        else:
+            self.static_compensation_deg = 0.0
+
+        boost_limit = max(
+            0.0, float(self.config.get("stall_drive_boost_max_deg", 0.0))
+        )
+        boost_ramp = max(
+            0.0,
+            float(self.config.get("stall_drive_boost_ramp_deg_s", 0.0)),
+        )
+
+        if stall_mature:
+            self.stall_drive_adaptation_active = True
+            proportional_after_reset = -(
+                self.config["velocity_kp_deg_per_m_s"] * velocity_error
+                + float(self.config.get("velocity_kd", 0.0))
+                * velocity_error_derivative
+            )
+            dynamic_after_reset = proportional_after_reset
+            if static_eligible:
+                angle_direction = (
+                    -1.0 if velocity_reference > 0.0 else 1.0
+                )
+                dynamic_after_reset = angle_direction * max(
+                    angle_direction * dynamic_after_reset,
+                    self.static_compensation_deg,
+                )
+            maximum_local_zero_deg = min(
+                abs(self.angle_min_deg),
+                abs(self.angle_max_deg),
+                LOCAL_ZERO_MAX_ABS_DEG,
+            )
+            transferable_bias = (
+                self.rate_limiter.value_deg
+                - dynamic_after_reset
+                - float(feedforward_angle_deg)
+            )
+            learned_zero = clamp(
+                transferable_bias,
+                -maximum_local_zero_deg,
+                maximum_local_zero_deg,
+            )
+            if abs(learned_zero - self.local_zero_angle_deg) >= 0.01:
+                self.local_zero_angle_deg = learned_zero
+                self.local_zero_position_m = position
+                self.inner_integral = 0.0
+                self.local_zero_update_count += 1
+            self.stall_drive_boost_angle_deg = clamp(
+                transferable_bias - learned_zero,
+                -boost_limit,
+                boost_limit,
+            )
+            self.local_zero_stall_reference_m = position
+            self.local_zero_stall_duration_s = 0.0
+        boost_target = 0.0
+        if (
+            stall_eligible
+            and self.stall_drive_adaptation_active
+            and abs(velocity_reference) > 1e-9
+        ):
+            boost_target = (
+                -boost_limit if velocity_reference > 0.0 else boost_limit
+            )
+        self.stall_drive_boost_angle_deg += clamp(
+            boost_target - self.stall_drive_boost_angle_deg,
+            -boost_ramp * dt,
+            boost_ramp * dt,
+        )
+
+        # 速度模式绕过位置预停和位置死区，但保留随管段更新的临时局部
+        # 角度零点，否则不同位置的坡度会被错误归因于速度PID参数。
+        raw_angle += self.local_zero_angle_deg
+        raw_angle += float(feedforward_angle_deg)
+        raw_angle += self.stall_drive_boost_angle_deg
+        saturated = clamp(raw_angle, self.angle_min_deg, self.angle_max_deg)
+        if (
+            raw_angle == saturated
+            or (
+                raw_angle > self.angle_max_deg and velocity_error > 0.0
+            )
+            or (
+                raw_angle < self.angle_min_deg and velocity_error < 0.0
+            )
+        ):
+            self.inner_integral = candidate_inner
+        self.outer_integral = 0.0
         self.last_velocity_reference_m_s = velocity_reference
         self.last_raw_angle_deg = raw_angle
         return self.rate_limiter.update(saturated)
@@ -598,14 +1248,25 @@ class ConstrainedMPCController:
         )
 
     def observe_acceleration(
-        self, measured_acceleration_m_s2: float, velocity_m_s: float
+        self,
+        measured_acceleration_m_s2: float,
+        velocity_m_s: float,
+        cart_acceleration_m_s2: float = 0.0,
+        gravity_m_s2: float = 9.80665,
+        equilibrium_angle_bias_deg: float = 0.0,
     ) -> None:
         if not math.isfinite(measured_acceleration_m_s2):
             return
         predicted = (
             -float(self.model["acceleration_gain_m_s2"])
-            * math.sin(self.previous_angle_rad)
+            * math.sin(
+                self.previous_angle_rad
+                - math.radians(equilibrium_angle_bias_deg)
+            )
             + self._friction_acceleration(velocity_m_s)
+            - float(self.model["acceleration_gain_m_s2"])
+            / max(float(gravity_m_s2), 1e-6)
+            * float(cart_acceleration_m_s2)
         )
         residual = measured_acceleration_m_s2 - predicted
         limit = float(self.config["max_disturbance_accel_m_s2"])
@@ -623,13 +1284,27 @@ class ConstrainedMPCController:
         position_m: float,
         velocity_m_s: float,
         target_position_m: float,
+        cart_acceleration_m_s2: float = 0.0,
+        gravity_m_s2: float = 9.80665,
+        equilibrium_angle_bias_deg: float = 0.0,
     ) -> float:
         gain = max(float(self.model["acceleration_gain_m_s2"]), 0.1)
         desired_acceleration = (
             8.0 * (target_position_m - position_m)
             - 3.0 * velocity_m_s
         )
-        requested = -math.asin(clamp(desired_acceleration / gain, -0.5, 0.5))
+        requested = (
+            math.radians(equilibrium_angle_bias_deg)
+            - math.asin(
+                clamp(
+                    desired_acceleration / gain
+                    + float(cart_acceleration_m_s2)
+                    / max(float(gravity_m_s2), 1e-6),
+                    -0.5,
+                    0.5,
+                )
+            )
+        )
         return clamp(
             requested,
             self.previous_angle_rad - self.max_step_rad,
@@ -642,6 +1317,9 @@ class ConstrainedMPCController:
         velocity_m_s: float,
         target_position_m: float,
         dt_s: float,
+        cart_acceleration_m_s2: float = 0.0,
+        gravity_m_s2: float = 9.80665,
+        equilibrium_angle_bias_deg: float = 0.0,
     ) -> float:
         dt = clamp(dt_s, 0.01, 0.10)
         started = time.perf_counter()
@@ -659,6 +1337,12 @@ class ConstrainedMPCController:
         costs = np.zeros(1)
         first_angles = np.array([self.previous_angle_rad])
         gain = float(self.model["acceleration_gain_m_s2"])
+        equilibrium_angle_bias_rad = math.radians(
+            float(equilibrium_angle_bias_deg)
+        )
+        cart_disturbance_gain = gain / max(
+            float(gravity_m_s2), 1e-6
+        )
         coulomb = float(self.model["coulomb_accel_m_s2"])
         viscous = float(self.model["viscous_drag_s_inv"])
         smooth_velocity = max(
@@ -685,11 +1369,16 @@ class ConstrainedMPCController:
                 velocities[:, None], action_levels, axis=1
             )
             acceleration = (
-                -gain * np.sin(candidate_angles)
+                -gain
+                * np.sin(
+                    candidate_angles - equilibrium_angle_bias_rad
+                )
                 - coulomb
                 * np.tanh(candidate_velocities_old / smooth_velocity)
                 - viscous * candidate_velocities_old
                 + self.disturbance_accel_m_s2
+                - cart_disturbance_gain
+                * float(cart_acceleration_m_s2)
             )
             candidate_positions = (
                 positions[:, None]
@@ -704,7 +1393,11 @@ class ConstrainedMPCController:
                 self.config["position_weight"] * errors ** 2
                 + self.config["velocity_weight"]
                 * candidate_velocities ** 2
-                + self.config["angle_weight"] * candidate_angles ** 2
+                + self.config["angle_weight"]
+                * (
+                    candidate_angles - equilibrium_angle_bias_rad
+                )
+                ** 2
                 + self.config["angle_change_weight"]
                 * actual_changes ** 2
             )
@@ -762,7 +1455,12 @@ class ConstrainedMPCController:
         )
         if not self.last_solve_success:
             requested = self._fallback_angle(
-                position_m, velocity_m_s, target_position_m
+                position_m,
+                velocity_m_s,
+                target_position_m,
+                cart_acceleration_m_s2,
+                gravity_m_s2,
+                equilibrium_angle_bias_deg,
             )
         requested = clamp(
             requested, self.angle_min_rad, self.angle_max_rad

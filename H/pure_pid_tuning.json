@@ -1,0 +1,8 @@
+{
+  "position_kp_s_inv": 0.6,
+  "position_ki_s2_inv": 0.0,
+  "position_kd": 0.0,
+  "velocity_kp_deg_per_m_s": 25.0,
+  "velocity_ki_deg_per_m": 4.0,
+  "velocity_kd": 0.0
+}

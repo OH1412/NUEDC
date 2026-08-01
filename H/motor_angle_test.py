@@ -11,11 +11,13 @@ from angle_serial import (
     DEFAULT_BAUD,
     DEFAULT_PORT,
     DEFAULT_RATE_HZ,
+    MAX_ANGLE_DEG,
     MOTOR_ENABLE_FRAME,
     MOTOR_INITIAL_ZERO_FRAME,
     AngleEncodingError,
     PeriodicAngleSender,
     SerialDependencyError,
+    angle_to_serial_displacement_mm,
     encode_angle,
 )
 
@@ -43,7 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit-deg",
         type=Decimal,
         default=Decimal("10"),
-        help="本测试允许的绝对角度，默认±%(default)s°，最大30°",
+        help=(
+            "本测试允许的绝对角度，默认±%(default)s°，"
+            "最大{}°".format(MAX_ANGLE_DEG)
+        ),
     )
     return parser
 
@@ -62,7 +67,9 @@ def validate_test_angle(text: str, limit_deg: Decimal) -> Decimal:
     if abs(value) > limit_deg:
         raise ValueError(
             "测试角度超出当前±{}°限制；确需扩大时使用"
-            " --limit-deg，最大只能30°".format(limit_deg)
+            " --limit-deg，最大只能{}°".format(
+                limit_deg, MAX_ANGLE_DEG
+            )
         )
     encode_angle(value)
     return value
@@ -72,8 +79,13 @@ def set_and_report(
     sender: PeriodicAngleSender, value: Decimal
 ) -> None:
     frame = sender.set_angle(value)
+    displacement_mm = angle_to_serial_displacement_mm(value)
     print(
-        "目标倾角：{}° | 发送：{}".format(value, format_frame(frame)),
+        "目标倾角：{}° | 电机升降：{:+.2f} mm | 发送：{}".format(
+            value,
+            displacement_mm,
+            format_frame(frame),
+        ),
         flush=True,
     )
 
@@ -108,9 +120,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if (
         not args.limit_deg.is_finite()
         or args.limit_deg <= 0
-        or args.limit_deg > Decimal("30")
+        or args.limit_deg > MAX_ANGLE_DEG
     ):
-        parser.error("--limit-deg必须位于(0, 30]度")
+        parser.error(
+            "--limit-deg必须位于(0, {}]度".format(MAX_ANGLE_DEG)
+        )
     initial_angle: Optional[Decimal] = None
     if args.angle is not None:
         try:

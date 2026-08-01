@@ -69,6 +69,7 @@ yolo_camera_captures/
 E/output/
 H/output/
 H/captured_photos/
+H/control_profiles/.active_profile
 
 *.jsonl
 *.log

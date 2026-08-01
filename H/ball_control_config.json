@@ -1,15 +1,28 @@
 {
-  "_description": "H题钢珠位置控制配置。zero_point_base_m必须先用零点标定脚本写入，单位均为SI或度。",
+  "_description": "H题钢珠位置控制配置。zero_point_base_m是球心贴近原零点端（物理0.5cm、新坐标-12.0cm）时的位置；equilibrium_angle_bias_deg只是当前目标未指定偏置时的初值，不代表所有位置共用同一保持角；单位均为SI或度。",
   "zero_point_base_m": [
-    0.199659,
-    0.124556,
-    0.126439
+    0.225076,
+    0.124873,
+    0.129672
   ],
   "pipe_length_m": 0.25,
+  "target_coordinate_center_m": 0.12,
+  "zero_calibration_ball_radius_m": 0.005,
   "ball_mass_kg": 0.00409,
-  "angle_min_deg": -30.0,
-  "angle_max_deg": 30.0,
-  "max_angle_step_deg": 1.5,
+  "angle_min_deg": -21.8,
+  "angle_max_deg": 21.8,
+  "equilibrium_angle_bias_deg": 0.0,
+  "working_angle_limit_deg": 3.0,
+  "max_angle_step_deg": 0.25,
+  "motor_displacement_scale": 1.0,
+  "special_task": {
+    "first_point_cm": 1.35,
+    "second_point_cm": -5.0,
+    "first_angle_deg": -1.2,
+    "positive_motor_scale": 1.0,
+    "negative_motor_scale": 1.0,
+    "smoothing_index_deg": 2.0
+  },
   "control_rate_hz": 25.0,
   "expected_vision_rate_hz": [
     15.0,
@@ -17,6 +30,30 @@
   ],
   "serial_rate_hz": 50.0,
   "measurement_timeout_s": 0.25,
+  "velocity_filter_time_constant_s": 0.12,
+  "velocity_stationary_window_s": 0.4,
+  "velocity_stationary_position_span_m": 0.0008,
+  "velocity_stationary_threshold_m_s": 0.001,
+  "position_local_zero_prior": {
+    "_description": "仅用于位置模式的目标点局部零点初始预测。标定值为电机升降毫米；标定区间内线性插值，区间外夹紧端点。停滞达到阈值后仍由实测学习覆盖。",
+    "enabled": true,
+    "points": [
+      {
+        "position_cm": -5.0,
+        "motor_mm": 0.65
+      },
+      {
+        "position_cm": 5.0,
+        "motor_mm": -1.5
+      }
+    ]
+  },
+  "acceleration_feedforward": {
+    "_description": "默认关闭。车辆正加速度方向为固定端（零点标定端）指向电机抬升端；正加速度产生负前馈倾角。当前尚未连接加速度串口。",
+    "gravity_m_s2": 9.80665,
+    "measurement_timeout_s": 0.25,
+    "max_abs_acceleration_m_s2": 5.0
+  },
   "safety": {
     "_description": "25Hz为超时监督率，控制器仅随15～20FPS新视觉帧更新。先在来向侧0.6cm安全预停，连续低速后缓慢推进到0.1cm偏置；最终按0.3cm精度收敛，越过目标另一侧1cm锁存失败记录但默认继续回拉。",
     "internal_tolerance_m": 0.003,
@@ -27,6 +64,7 @@
     "approach_target_offset_m": 0.006,
     "final_target_offset_m": 0.001,
     "target_refinement_error_m": 0.006,
+    "target_refinement_noise_margin_m": 0.0015,
     "target_refinement_speed_m_s": 0.008,
     "target_refinement_dwell_s": 0.6,
     "target_refinement_rate_m_s": 0.001
@@ -39,20 +77,54 @@
     "outlier_gate_sigma": 5.0
   },
   "cascade_pid": {
-    "position_kp_s_inv": 1.2,
+    "position_kp_s_inv": 0.6,
     "position_ki_s2_inv": 0.0,
-    "max_velocity_m_s": 0.035,
+    "position_kd": 0.0,
+    "max_velocity_m_s": 0.012,
     "braking_accel_m_s2": 0.8,
     "braking_margin_m": 0.003,
     "velocity_kp_deg_per_m_s": 25.0,
-    "velocity_ki_deg_per_m": 12.0,
-    "static_friction_compensation_deg": 5.0,
-    "static_compensation_ramp_deg_s": 6.0,
+    "velocity_ki_deg_per_m": 4.0,
+    "velocity_kd": 0.0,
+    "static_friction_compensation_deg": 0.8,
+    "static_compensation_ramp_deg_s": 1.0,
     "static_compensation_max_speed_m_s": 0.01,
     "static_compensation_min_error_m": 0.006,
-    "far_drive_angle_deg": 10.0,
+    "local_zero_stall_time_s": 2.0,
+    "stall_drive_boost_max_deg": 1.0,
+    "stall_drive_boost_ramp_deg_s": 0.25,
+    "stall_calibrated_angle_snap": {
+      "_description": "只在持续停滞成熟时，按目标中心坐标把驱动力一次提高到至少标定角；若仍停滞则继续按原增驱速度增加。平时不作为位置前馈。区间边界由标定位置向中心留1cm得到。",
+      "enabled": true,
+      "zones": [
+        {
+          "target_min_cm": -10.0,
+          "target_max_cm": -8.6,
+          "angle_deg": 1.09
+        },
+        {
+          "target_max_cm": -10.0,
+          "angle_deg": 1.31
+        },
+        {
+          "target_min_cm": 10.0,
+          "angle_deg": -1.6
+        },
+        {
+          "target_min_cm": 7.8,
+          "target_max_cm": 10.0,
+          "angle_deg": -1.1
+        },
+        {
+          "target_min_cm": 3.0,
+          "target_max_cm": 7.8,
+          "angle_deg": -0.74
+        }
+      ]
+    },
+    "far_drive_angle_deg": 0.0,
     "far_drive_min_error_m": 0.05,
-    "position_deadband_m": 0.002,
+    "position_deadband_m": 0.003,
     "velocity_deadband_m_s": 0.008,
     "outer_integral_limit_m_s": 0.08,
     "inner_integral_limit_deg": 8.0

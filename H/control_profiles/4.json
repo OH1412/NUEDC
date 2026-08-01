@@ -1,0 +1,31 @@
+{
+  "_description": "H题钢珠串级PID实时调参方案。",
+  "name": "4",
+  "parameters": {
+    "working_angle_limit_deg": 3.0,
+    "max_angle_step_deg": 0.25,
+    "motor_displacement_scale": 0.6,
+    "velocity_filter_time_constant_s": 0.12,
+    "equilibrium_angle_bias_deg": 0.0,
+    "position_kp_s_inv": 0.3,
+    "position_ki_s2_inv": 0.0,
+    "max_velocity_m_s": 0.05,
+    "braking_accel_m_s2": 0.8,
+    "braking_margin_m": 0.0035,
+    "velocity_kp_deg_per_m_s": 5.0,
+    "velocity_ki_deg_per_m": 0.0,
+    "static_friction_compensation_deg": 1.0,
+    "static_compensation_ramp_deg_s": 2.0,
+    "static_compensation_max_speed_m_s": 0.011,
+    "static_compensation_min_error_m": 0.006,
+    "local_zero_stall_time_s": 1.5,
+    "stall_drive_boost_max_deg": 1.0,
+    "stall_drive_boost_ramp_deg_s": 0.25,
+    "far_drive_angle_deg": 0.1,
+    "far_drive_min_error_m": 0.05,
+    "position_deadband_m": 0.005,
+    "velocity_deadband_m_s": 0.008,
+    "outer_integral_limit_m_s": 0.08,
+    "inner_integral_limit_deg": 8.0
+  }
+}

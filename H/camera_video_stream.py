@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--stream-host",
-        default="192.168.50.43",
+        default="192.168.50.199",
         help="接收视频的PC局域网IP",
     )
     parser.add_argument(

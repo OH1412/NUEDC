@@ -22,7 +22,7 @@ from udp_video_stream import StreamConfig, StreamError, UdpH264Streamer
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_TRANSFORM = SCRIPT_DIR / "camera_to_base.json"
 DEFAULT_ENGINE = SCRIPT_DIR / "weights" / "steel_ball_best_legacy.engine"
-DEFAULT_PT = SCRIPT_DIR / "weights" / "steel_ball_v5.pt"
+DEFAULT_PT = SCRIPT_DIR / "weights" / "steel_ball_v6_server_real_env.pt"
 DEFAULT_BALL_RADIUS_M = 0.005
 
 
